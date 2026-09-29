@@ -9,4 +9,5 @@ urlpatterns = [
     path('currencies/',       views.currencies),
     path('units/',            views.units),
     path('pipeline-stages/',  views.pipeline_stages),
+    path('options/<str:kind>/', views.add_option),
 ]

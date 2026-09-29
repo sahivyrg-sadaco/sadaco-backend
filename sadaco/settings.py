@@ -154,7 +154,8 @@ PIPELINE_STAGES = [
     'PO Sent', 'Invoiced', 'Delivered', 'Closed', 'Cancelled',
 ]
 CURRENCIES    = ['USD', 'EUR', 'VES', 'COP', 'BRL']
-INCOTERMS     = ['EXW', 'FOB', 'CIF', 'CPT', 'DDP', 'DAP', 'DDU']
+# Incoterms 2020 (ICC). Deals saved with older terms such as DDU keep them.
+INCOTERMS     = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP']
 PAYMENT_TERMS = [
     '100% Prepagado', '50% anticipado / 50% contra entrega',
     '30% anticipado / 70% contra entrega',
