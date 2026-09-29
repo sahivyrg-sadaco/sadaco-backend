@@ -82,3 +82,23 @@ class UserDetailView(APIView):
             user.set_password(pw)
             user.save(update_fields=['password'])
         return Response(UserSerializer(user).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """POST /api/auth/change-password/ — { current_password, new_password }"""
+    current = request.data.get('current_password') or ''
+    new     = request.data.get('new_password') or ''
+    if not request.user.check_password(current):
+        return Response({'error': 'Your current password is not correct.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if len(new) < 8:
+        return Response({'error': 'The new password needs at least 8 characters.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if new == current:
+        return Response({'error': 'The new password must be different from the current one.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    request.user.set_password(new)
+    request.user.save(update_fields=['password'])
+    return Response({'ok': True})
