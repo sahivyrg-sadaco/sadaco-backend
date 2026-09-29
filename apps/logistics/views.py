@@ -31,6 +31,12 @@ def _ships_qs():
     return Shipment.objects.prefetch_related('orders')
 
 
+def _sync_cost(shipment):
+    """Freight entered on a shipment appears as that shipment's cost on the Costs tab."""
+    from apps.costs.services import sync_shipment_cost
+    sync_shipment_cost(shipment)
+
+
 # ── Supplier orders ─────────────────────────────────────────────────────────
 class DealOrdersView(_WriteRoles, APIView):
     """GET /api/deals/{id}/orders/ → { orders, pending_awards }"""
@@ -101,6 +107,7 @@ class DealShipmentsView(_WriteRoles, APIView):
         mark_progress(shipment, ['status'])
         services.after_shipment_change(shipment, None, request.user)
         shipment.save()
+        _sync_cost(shipment)
         services.log(deal, request.user, f'Shipment added: {shipment.get_leg_display()}'
                      + (f', tracking {shipment.tracking_number}' if shipment.tracking_number else '') + '.')
         return Response(ShipmentSerializer(_ships_qs().get(pk=shipment.pk)).data,
@@ -125,13 +132,17 @@ class ShipmentDetailView(_WriteRoles, APIView):
         if 'status' in changed or 'orders' in request.data:
             services.after_shipment_change(shipment, before['status'], request.user)
         shipment.save()
+        _sync_cost(shipment)
         if 'status' in changed:
             services.log(shipment.deal, request.user,
                          f'Shipment {shipment.get_leg_display()}: {shipment.get_status_display().lower()}.')
         return Response(ShipmentSerializer(_ships_qs().get(pk=shipment.pk)).data)
 
+    @transaction.atomic
     def delete(self, request, sid):
         shipment = get_object_or_404(Shipment, pk=sid)
+        from apps.costs.services import detach_shipment
+        detach_shipment(shipment)
         services.log(shipment.deal, request.user,
                      f'Shipment deleted: {shipment.get_leg_display()}.')
         shipment.delete()

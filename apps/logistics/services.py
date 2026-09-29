@@ -316,6 +316,29 @@ def _deal_entries(deals_qs, today):
     return out
 
 
+def _cost_entries(deals_qs):
+    """Costs whose invoice came in more than 10% over the estimate, until someone acknowledges it."""
+    from apps.costs.models import DealCost
+    from apps.costs.services import compute
+    out = []
+    deal_ids = (DealCost.objects.filter(deal__in=deals_qs, actual_amount__isnull=False,
+                                        overrun_acknowledged=False)
+                .values_list('deal_id', flat=True).distinct())
+    for d in Deal.objects.filter(pk__in=list(deal_ids)).select_related('client'):
+        for o in compute(d)['overruns']:
+            what = o['category'] + (f' ({o["description"]})' if o['description'] else '')
+            out.append({
+                'kind': 'cost', 'id': o['id'],
+                'deal_id': d.id, 'deal_reference': d.reference, 'client_name': d.client.dropdown_name,
+                'title': what, 'subtitle': f'Estimate {d.currency} {o["estimate"]:,.2f}, '
+                                          f'invoice {d.currency} {o["actual"]:,.2f}',
+                'status': 'overrun', 'status_label': 'Over estimate',
+                'due_date': None, 'due_label': None,
+                'flags': [{'level': 'warn', 'text': f'Invoice {o["over_pct"]:.0f}% over the estimate'}],
+            })
+    return out
+
+
 def build_board(user):
     today = timezone.localdate()
     deals = Deal.objects.all()
@@ -332,6 +355,7 @@ def build_board(user):
     entries = [e for e in entries if e['status'] != 'shipped' or e['flags']]
     entries += [_shipment_entry(s, today) for s in ships]
     entries += _deal_entries(deals, today)
+    entries += _cost_entries(deals)
 
     def sort_key(e):
         severity = 0 if any(f['level'] == 'late' for f in e['flags']) else (1 if e['flags'] else 2)

@@ -85,6 +85,7 @@ class DealListSerializer(serializers.ModelSerializer):
     orders_total    = serializers.SerializerMethodField()
     orders_received = serializers.SerializerMethodField()
     next_eta        = serializers.SerializerMethodField()
+    economics       = serializers.SerializerMethodField()
 
     class Meta:
         model  = Deal
@@ -93,7 +94,7 @@ class DealListSerializer(serializers.ModelSerializer):
             'owner', 'owner_name', 'seller_entity', 'status', 'deal_status',
             'currency', 'exchange_rate', 'created_at',
             'total_price', 'total_cost', 'item_count',
-            'orders_total', 'orders_received', 'next_eta',
+            'orders_total', 'orders_received', 'next_eta', 'economics',
         ]
         extra_kwargs = {'exchange_rate': {'coerce_to_string': False}}
 
@@ -106,6 +107,26 @@ class DealListSerializer(serializers.ModelSerializer):
     def get_item_count(self, obj):      return getattr(obj, 'item_count', None)
     def get_orders_total(self, obj):    return getattr(obj, 'orders_total', None) or 0
     def get_orders_received(self, obj): return getattr(obj, 'orders_received', None) or 0
+
+    def get_economics(self, obj):
+        """Net margin estimated and actual so far, including extra costs."""
+        if not hasattr(obj, 'sum_price'):
+            return None
+        from apps.costs.services import compute
+        try:
+            settings_obj = obj.cost_settings
+        except Exception:  # no settings row → incoterm default
+            settings_obj = False
+        e = compute(obj, costs=list(obj.extra_costs.all()),
+                    goods=float(obj.sum_cost or 0), sell=float(obj.sum_price or 0), settings_obj=settings_obj)
+        return {
+            'net_margin_est': e['estimate']['net_margin_pct'],
+            'net_margin_act': e['actual_so_far']['net_margin_pct'],
+            'gross_margin': e['gross_margin_pct'],
+            'costs_total': e['costs_total'],
+            'costs_invoiced': e['costs_invoiced'],
+            'revenue': e['estimate']['revenue'],
+        }
 
     def get_next_eta(self, obj):
         v = getattr(obj, 'next_eta', None)

@@ -188,7 +188,7 @@ def annotate_list_summary(qs):
 
     top_level = Q(items__is_split_child=False)
     live_orders = SupplierOrder.objects.filter(deal=OuterRef('pk')).exclude(status='cancelled')
-    return qs.annotate(
+    return qs.select_related('cost_settings').prefetch_related('extra_costs').annotate(
         sum_price=Sum(F('items__qty') * F('items__unit_price'), filter=top_level),
         sum_cost=Sum(F('items__qty') * F('items__unit_cost'), filter=top_level),
         item_count=Count('items', filter=top_level),
