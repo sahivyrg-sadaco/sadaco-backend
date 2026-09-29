@@ -15,6 +15,8 @@ class SupplierOrderItemSerializer(serializers.ModelSerializer):
 class SupplierOrderSerializer(serializers.ModelSerializer):
     supplier_name  = serializers.SerializerMethodField()
     supplier_email = serializers.SerializerMethodField()
+    supplier_contact = serializers.SerializerMethodField()
+    supplier_phone = serializers.SerializerMethodField()
     status_label   = serializers.CharField(source='get_status_display', read_only=True)
     items          = SupplierOrderItemSerializer(many=True, read_only=True)
     total          = serializers.SerializerMethodField()
@@ -23,7 +25,8 @@ class SupplierOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model  = SupplierOrder
         fields = [
-            'id', 'deal', 'supplier', 'supplier_name', 'supplier_email', 'supplier_quote',
+            'id', 'deal', 'supplier', 'supplier_name', 'supplier_email', 'supplier_contact',
+            'supplier_phone', 'supplier_quote',
             'po_number', 'supplier_ref', 'status', 'status_label', 'currency',
             'payment_terms', 'incoterm',
             'sent_date', 'confirmed_date', 'promised_date', 'ready_date', 'shipped_date', 'received_date',
@@ -37,6 +40,12 @@ class SupplierOrderSerializer(serializers.ModelSerializer):
 
     def get_supplier_email(self, o):
         return o.supplier.email if o.supplier else None
+
+    def get_supplier_contact(self, o):
+        return o.supplier.contact_name if o.supplier else None
+
+    def get_supplier_phone(self, o):
+        return o.supplier.phone if o.supplier else None
 
     def get_total(self, o):
         return round(o.total, 2)

@@ -174,3 +174,27 @@ def apply_winning_quote(deal_id: int, quote_id: int) -> int:
         item.save(update_fields=['unit_cost', 'margin_pct'])
         updated += 1
     return updated
+
+
+
+def annotate_list_summary(qs):
+    """
+    Add what the deals list shows at a glance: sell value, cost, number of
+    lines, supplier orders received out of total, and the next shipment ETA.
+    Order and shipment figures use subqueries so the item sums aren't multiplied.
+    """
+    from django.db.models import Count, F, OuterRef, Q, Subquery, Sum
+    from apps.logistics.models import Shipment, SupplierOrder
+
+    top_level = Q(items__is_split_child=False)
+    live_orders = SupplierOrder.objects.filter(deal=OuterRef('pk')).exclude(status='cancelled')
+    return qs.annotate(
+        sum_price=Sum(F('items__qty') * F('items__unit_price'), filter=top_level),
+        sum_cost=Sum(F('items__qty') * F('items__unit_cost'), filter=top_level),
+        item_count=Count('items', filter=top_level),
+        orders_total=Subquery(live_orders.values('deal').annotate(n=Count('id')).values('n')[:1]),
+        orders_received=Subquery(live_orders.filter(status='received')
+                                 .values('deal').annotate(n=Count('id')).values('n')[:1]),
+        next_eta=Subquery(Shipment.objects.filter(deal=OuterRef('pk'), status__in=Shipment.OPEN_STATUSES,
+                                                  eta__isnull=False).order_by('eta').values('eta')[:1]),
+    )

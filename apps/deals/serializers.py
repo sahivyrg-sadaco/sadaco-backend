@@ -76,16 +76,40 @@ class DealItemSplitSerializer(serializers.ModelSerializer):
 class DealListSerializer(serializers.ModelSerializer):
     """Lightweight serializer used for list views."""
     client_name = serializers.CharField(source='client.full_name', read_only=True)
+    client_key  = serializers.CharField(source='client.dropdown_name', read_only=True)
     owner_name  = serializers.CharField(source='owner.name',       read_only=True, default=None)
+    # Filled by services.annotate_list_summary(); absent → null.
+    total_price     = serializers.SerializerMethodField()
+    total_cost      = serializers.SerializerMethodField()
+    item_count      = serializers.SerializerMethodField()
+    orders_total    = serializers.SerializerMethodField()
+    orders_received = serializers.SerializerMethodField()
+    next_eta        = serializers.SerializerMethodField()
 
     class Meta:
         model  = Deal
         fields = [
-            'id', 'reference', 'client', 'client_name', 'owner', 'owner_name',
-            'seller_entity', 'status', 'deal_status',
+            'id', 'reference', 'client', 'client_name', 'client_key', 'client_ref',
+            'owner', 'owner_name', 'seller_entity', 'status', 'deal_status',
             'currency', 'exchange_rate', 'created_at',
+            'total_price', 'total_cost', 'item_count',
+            'orders_total', 'orders_received', 'next_eta',
         ]
         extra_kwargs = {'exchange_rate': {'coerce_to_string': False}}
+
+    def _num(self, obj, attr):
+        v = getattr(obj, attr, None)
+        return round(float(v), 2) if v is not None else None
+
+    def get_total_price(self, obj):     return self._num(obj, 'sum_price')
+    def get_total_cost(self, obj):      return self._num(obj, 'sum_cost')
+    def get_item_count(self, obj):      return getattr(obj, 'item_count', None)
+    def get_orders_total(self, obj):    return getattr(obj, 'orders_total', None) or 0
+    def get_orders_received(self, obj): return getattr(obj, 'orders_received', None) or 0
+
+    def get_next_eta(self, obj):
+        v = getattr(obj, 'next_eta', None)
+        return v.isoformat() if hasattr(v, 'isoformat') else v
 
 
 class DealDetailSerializer(serializers.ModelSerializer):

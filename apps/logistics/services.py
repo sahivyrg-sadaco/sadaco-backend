@@ -192,6 +192,24 @@ def _n_days(n):
     return f'{n} day' if n == 1 else f'{n} days'
 
 
+def _item_summary(items, limit=2):
+    """'10 × Bearing 6205, 4 × Seal (+3 more)'"""
+    items = list(items)
+    parts = [f'{_qty_str(i.qty)} × {i.description.splitlines()[0][:60]}' for i in items[:limit]]
+    if len(items) > limit:
+        parts.append(f'+{len(items) - limit} more')
+    return ', '.join(parts)
+
+
+def _ship_brief(s):
+    who = s.carrier or s.forwarder
+    return {
+        'id': s.id, 'leg': s.get_leg_display(), 'status': s.get_status_display(),
+        'carrier': who, 'tracking_number': s.tracking_number, 'mode': s.mode,
+        'eta': s.eta.isoformat() if s.eta else None,
+    }
+
+
 def _order_entry(o, today):
     flags = []
     open_ship = [s for s in o.shipments.all() if s.status != 'cancelled']
@@ -212,20 +230,28 @@ def _order_entry(o, today):
     if o.status == 'shipped' and not open_ship:
         flags.append(('warn', 'Marked shipped, but no shipment or tracking recorded'))
 
-    due = None
+    due, due_label = None, None
     if o.status in ('draft', 'sent', 'confirmed'):
-        due = o.promised_date
+        due, due_label = o.promised_date, 'Promised ready'
     elif o.status in ('ready', 'shipped'):
         etas = [s.eta for s in open_ship if s.eta and s.status in Shipment.OPEN_STATUSES]
-        due = min(etas) if etas else o.ready_date
+        if etas:
+            due, due_label = min(etas), 'ETA'
+        else:
+            due, due_label = o.ready_date, 'Ready since'
+    items = list(o.items.all())
 
     return {
         'kind': 'order', 'id': o.id,
         'deal_id': o.deal_id, 'deal_reference': o.deal.reference, 'client_name': o.deal.client.dropdown_name,
         'title': f'{o.po_number}, {o.supplier.company_name if o.supplier else "no supplier"}',
-        'subtitle': f'{o.items.count()} line(s)' + (f', supplier ref {o.supplier_ref}' if o.supplier_ref else ''),
+        'subtitle': f'{len(items)} line(s)' + (f', supplier ref {o.supplier_ref}' if o.supplier_ref else ''),
+        'summary': _item_summary(items),
+        'value': round(o.total, 2), 'currency': o.currency,
+        'supplier_ref': o.supplier_ref,
+        'shipments': [_ship_brief(s) for s in open_ship],
         'status': o.status, 'status_label': o.get_status_display(),
-        'due_date': due, 'flags': [{'level': l, 'text': t} for l, t in flags],
+        'due_date': due, 'due_label': due_label, 'flags': [{'level': l, 'text': t} for l, t in flags],
     }
 
 
@@ -244,14 +270,27 @@ def _shipment_entry(s, today):
             flags.append(('warn', 'No tracking number'))
 
     route = ' to '.join(x for x in (s.origin, s.destination) if x)
+    orders = list(s.orders.all())
+    if s.eta:
+        due, due_label = s.eta, 'ETA'
+    elif s.etd and not s.departed_date:
+        due, due_label = s.etd, 'Departs'
+    else:
+        due, due_label = None, None
+    last = s.last_update_at or s.created_at
     return {
         'kind': 'shipment', 'id': s.id,
         'deal_id': s.deal_id, 'deal_reference': s.deal.reference, 'client_name': s.deal.client.dropdown_name,
         'title': f'{s.get_leg_display()}, {s.get_mode_display().lower()}'
                  + (f', {s.forwarder}' if s.forwarder else ''),
-        'subtitle': ', '.join(x for x in (route, s.tracking_number and f'tracking {s.tracking_number}') if x),
+        'subtitle': route,
+        'carries': [{'po_number': o.po_number,
+                     'supplier': o.supplier.company_name if o.supplier else None} for o in orders],
+        'carrier': s.carrier, 'tracking_number': s.tracking_number, 'mode': s.mode,
+        'packages': s.packages,
+        'last_update': timezone.localtime(last).date().isoformat() if last else None,
         'status': s.status, 'status_label': s.get_status_display(),
-        'due_date': s.eta or s.etd, 'flags': [{'level': l, 'text': t} for l, t in flags],
+        'due_date': due, 'due_label': due_label, 'flags': [{'level': l, 'text': t} for l, t in flags],
     }
 
 
@@ -272,7 +311,7 @@ def _deal_entries(deals_qs, today):
             'deal_id': d.id, 'deal_reference': d.reference, 'client_name': d.client.dropdown_name,
             'title': 'Supplier orders to place', 'subtitle': f'Stage: {d.status}',
             'status': 'to_order', 'status_label': 'To order',
-            'due_date': None, 'flags': [{'level': 'warn', 'text': text}],
+            'due_date': None, 'due_label': None, 'flags': [{'level': 'warn', 'text': text}],
         })
     return out
 
@@ -286,7 +325,7 @@ def build_board(user):
     orders = (SupplierOrder.objects.filter(deal__in=deals, status__in=SupplierOrder.OPEN_STATUSES)
               .select_related('deal', 'deal__client', 'supplier').prefetch_related('shipments', 'items'))
     ships = (Shipment.objects.filter(deal__in=deals, status__in=Shipment.OPEN_STATUSES)
-             .select_related('deal', 'deal__client'))
+             .select_related('deal', 'deal__client').prefetch_related('orders', 'orders__supplier'))
 
     entries = [_order_entry(o, today) for o in orders]
     # A shipped order is followed through its shipment; only list it if something is off.

@@ -47,6 +47,7 @@ class DealListCreateView(APIView):
         if client_filter:
             qs = qs.filter(client_id=client_filter)
 
+        qs = services.annotate_list_summary(qs)
         return Response(DealListSerializer(qs, many=True).data)
 
     def post(self, request):
