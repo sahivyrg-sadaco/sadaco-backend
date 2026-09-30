@@ -41,16 +41,18 @@ TYPICAL_SHAPE = {
 }
 
 
+# Company standard: extra costs are built into item prices on every deal,
+# whatever the incoterm. A deal (or a single cost) can still be set otherwise.
+STANDARD_TREATMENT = 'included'
+
+
 def default_treatment(deal, settings_obj=None):
-    """(treatment, source). E and F terms → built into prices; C and D terms → separate line."""
+    """(treatment, source): the deal's own setting if it has one, otherwise the company standard."""
     # settings_obj: a DealCostSettings, False (known to have none), or None (look it up).
     s = settings_obj if settings_obj is not None else DealCostSettings.objects.filter(deal=deal).first()
     if s:
         return s.default_treatment, 'set'
-    term = (deal.incoterm or '').upper()
-    if term and term[0] in 'CD':
-        return 'separate', 'incoterm'
-    return 'included', 'incoterm'
+    return STANDARD_TREATMENT, 'standard'
 
 
 def to_deal_currency(amount, cost, deal):
