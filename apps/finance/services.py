@@ -1,0 +1,328 @@
+"""
+Receivables, payables and per-deal cash position.
+
+Status rules (both directions)
+- paid:    balance ≤ 0.005
+- partial: something paid, balance left
+- open:    nothing paid
+Overdue = not paid and due date before today.
+"""
+import re
+from datetime import date, timedelta
+from decimal import Decimal
+
+from django.db.models import Sum
+from django.utils import timezone
+
+from apps.deals.models import Deal, DealActivity
+from apps.payments.models import Payment
+from apps.payments.services import parse_payment_terms_days
+from .models import ClientInvoice, Payable, PayablePayment
+
+DUE_SOON_DAYS = 3
+
+
+def log(deal, user, text):
+    DealActivity.objects.create(deal=deal, user=user if getattr(user, 'is_authenticated', False) else None,
+                                activity_type='payment', description=text)
+
+
+def terms_due_date(invoice_date, terms):
+    """Due date from payment terms. Advance / prepaid / on-delivery terms are due on the invoice date."""
+    t = (terms or '').lower()
+    if any(w in t for w in ('anticip', 'prepag', 'prepaid', 'advance', 'contra entrega', 'on delivery', 'cash')):
+        return invoice_date
+    return invoice_date + timedelta(days=parse_payment_terms_days(terms))
+
+
+def _status(amount, paid):
+    balance = float(amount) - float(paid)
+    if balance <= 0.005:
+        return 'paid', 0.0
+    return ('partial' if paid > 0 else 'open'), round(balance, 2)
+
+
+def _due_info(due, status, today):
+    if status == 'paid' or not due:
+        return None, None
+    d = (due - today).days
+    return (-d if d < 0 else 0), d
+
+
+# ── Rows ────────────────────────────────────────────────────────────────────
+def invoice_rows(invoices, today=None):
+    today = today or timezone.localdate()
+    invoices = list(invoices)
+    pays = {}
+    for p in Payment.objects.filter(invoice_ref__in=[i.number for i in invoices]).order_by('payment_date', 'id'):
+        pays.setdefault(p.invoice_ref, []).append(p)
+    rows = []
+    for i in invoices:
+        plist = pays.get(i.number, [])
+        paid = sum(float(p.amount) for p in plist)
+        status, balance = ('cancelled', 0.0) if i.cancelled else _status(i.amount, paid)
+        overdue, days_to_due = _due_info(i.due_date, status if not i.cancelled else 'paid', today)
+        rows.append({
+            'id': i.id, 'deal': i.deal_id, 'number': i.number, 'description': i.description,
+            'invoice_date': i.invoice_date.isoformat(), 'due_date': i.due_date.isoformat(),
+            'amount': float(i.amount), 'currency': i.currency, 'paid': round(paid, 2), 'balance': balance,
+            'status': status, 'days_overdue': overdue or 0, 'days_to_due': days_to_due,
+            'cancelled': i.cancelled, 'notes': i.notes,
+            'payments': [{'id': p.id, 'amount': float(p.amount), 'currency': p.currency,
+                          'payment_date': p.payment_date.isoformat(), 'method': p.method, 'notes': p.notes}
+                         for p in plist],
+        })
+    return rows
+
+
+def payable_rows(payables, today=None):
+    today = today or timezone.localdate()
+    rows = []
+    for p in payables:
+        plist = list(p.payments.all())
+        paid = sum(float(x.amount) for x in plist)
+        status, balance = _status(p.amount, paid)
+        overdue, days_to_due = _due_info(p.due_date, status, today)
+        cost = p.deal_cost
+        rows.append({
+            'id': p.id, 'deal': p.deal_id, 'kind': p.kind,
+            'payee': p.payee or (p.supplier.company_name if p.supplier else ''),
+            'supplier': p.supplier_id,
+            'supplier_order': p.supplier_order_id,
+            'po_number': p.supplier_order.po_number if p.supplier_order else None,
+            'deal_cost': p.deal_cost_id,
+            'cost_label': (cost.get_category_display() + (f' ({cost.description})' if cost.description else '')) if cost else None,
+            'invoice_ref': p.invoice_ref, 'invoice_date': p.invoice_date.isoformat(),
+            'due_date': p.due_date.isoformat(), 'payment_terms': p.payment_terms,
+            'amount': float(p.amount), 'currency': p.currency, 'paid': round(paid, 2), 'balance': balance,
+            'status': status, 'days_overdue': overdue or 0, 'days_to_due': days_to_due, 'notes': p.notes,
+            'payments': [{'id': x.id, 'amount': float(x.amount), 'payment_date': x.payment_date.isoformat(),
+                          'method': x.method, 'reference': x.reference, 'notes': x.notes} for x in plist],
+        })
+    return rows
+
+
+def _payables_qs():
+    return Payable.objects.select_related('supplier', 'supplier_order', 'deal_cost').prefetch_related('payments')
+
+
+# ── Suggestions for the next client invoice ─────────────────────────────────
+def invoice_suggestions(deal, invoiced_total):
+    """
+    What's left to bill, split by the deal's payment terms when they state
+    percentages (e.g. '30% anticipado / 70% contra entrega').
+    """
+    from apps.costs.services import compute
+    revenue = compute(deal)['estimate']['revenue']
+    remaining = round(revenue - invoiced_total, 2)
+    terms = deal.payment_terms or ''
+    pcts = [int(x) for x in re.findall(r'(\d{1,3})\s*%', terms)]
+    sugg = []
+    if remaining > 0.005:
+        # With split terms, continue the sequence from wherever invoicing has reached
+        # (e.g. after the 30% advance, suggest the 70% balance).
+        start = None
+        if len(pcts) >= 2 and sum(pcts) == 100:
+            done = 0.0
+            for k, p in enumerate(pcts):
+                if abs(invoiced_total - done) < 0.01:
+                    start = k
+                    break
+                done += revenue * p / 100
+        if start is not None:
+            labels = [('Advance', 'Anticipo'), ('Balance', 'Saldo')] + [('Part', 'Parte')] * 5
+            on_delivery = 'entrega' in terms.lower() or 'delivery' in terms.lower()
+            for k in range(start, len(pcts)):
+                p = pcts[k]
+                en, es = labels[min(k, len(labels) - 1)] if len(pcts) == 2 or k < 2 else ('Part', 'Parte')
+                sugg.append({'description': f'{en} {p}% ({es} {p}%)', 'amount': round(revenue * p / 100, 2),
+                             'due_on_invoice': k == 0 or on_delivery})
+        else:
+            sugg.append({'description': 'Balance (Saldo)' if invoiced_total > 0 else 'Invoice (Factura)',
+                         'amount': remaining, 'due_on_invoice': False})
+    n = ClientInvoice.objects.filter(deal=deal).count() + 1
+    base = deal.reference or f'D{deal.pk}'
+    while ClientInvoice.objects.filter(number=f'{base}-F{n}').exists():
+        n += 1
+    return {'revenue': round(revenue, 2), 'invoiced': round(invoiced_total, 2), 'remaining': remaining,
+            'suggestions': sugg, 'next_number': f'{base}-F{n}'}
+
+
+# ── Per-deal view ────────────────────────────────────────────────────────────
+def deal_money(deal):
+    today = timezone.localdate()
+    inv = invoice_rows(ClientInvoice.objects.filter(deal=deal), today)
+    pay = payable_rows(_payables_qs().filter(deal=deal), today)
+    live_inv = [r for r in inv if not r['cancelled']]
+    invoiced = sum(r['amount'] for r in live_inv)
+    received = sum(r['paid'] for r in inv)
+
+    from apps.logistics.models import SupplierOrder
+    invoiced_orders = {p['supplier_order'] for p in pay if p['supplier_order']}
+    uninvoiced = [{'id': o.id, 'po_number': o.po_number, 'supplier': o.supplier.company_name if o.supplier else None,
+                   'total': round(o.total, 2), 'currency': o.currency, 'payment_terms': o.payment_terms,
+                   'status': o.status}
+                  for o in SupplierOrder.objects.filter(deal=deal).exclude(status='cancelled')
+                  .select_related('supplier').prefetch_related('items')
+                  if o.id not in invoiced_orders]
+
+    # Supplier-side totals per currency (costs can be in VES etc.).
+    by_cur = {}
+    for p in pay:
+        c = by_cur.setdefault(p['currency'], {'currency': p['currency'], 'owed': 0.0, 'paid': 0.0, 'to_pay': 0.0,
+                                                'overdue': 0.0})
+        c['owed'] += p['amount']
+        c['paid'] += p['paid']
+        c['to_pay'] += p['balance']
+        if p['days_overdue']:
+            c['overdue'] += p['balance']
+    return {
+        'currency': deal.currency,
+        'invoices': inv,
+        'payables': pay,
+        'uninvoiced_orders': uninvoiced,
+        'client': {
+            'invoiced': round(invoiced, 2), 'received': round(received, 2),
+            'to_collect': round(sum(r['balance'] for r in live_inv), 2),
+            'overdue': round(sum(r['balance'] for r in live_inv if r['days_overdue']), 2),
+        },
+        'suppliers': [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in c.items()} for c in by_cur.values()],
+        'next_invoice': invoice_suggestions(deal, invoiced),
+    }
+
+
+# ── Company-wide lists ──────────────────────────────────────────────────────
+def _deals_for(user):
+    qs = Deal.objects.all()
+    if getattr(user, 'role', None) == 'sales':
+        qs = qs.filter(owner=user)
+    return qs
+
+
+def _totals(rows):
+    out = {}
+    for r in rows:
+        t = out.setdefault(r['currency'], {'currency': r['currency'], 'outstanding': 0.0, 'overdue': 0.0,
+                                           'due_7_days': 0.0, 'count': 0})
+        t['outstanding'] += r['balance']
+        t['count'] += 1
+        if r['days_overdue']:
+            t['overdue'] += r['balance']
+        elif r['days_to_due'] is not None and r['days_to_due'] <= 7:
+            t['due_7_days'] += r['balance']
+    return [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in t.items()} for t in out.values()]
+
+
+def _with_deal(rows, deals_by_id):
+    for r in rows:
+        d = deals_by_id.get(r['deal'])
+        r['deal_reference'] = d.reference if d else None
+        r['client_name'] = d.client.dropdown_name if d else None
+    return rows
+
+
+def receivables(user, include_paid=False):
+    deals = _deals_for(user)
+    qs = ClientInvoice.objects.filter(deal__in=deals, cancelled=False).order_by('due_date', 'id')
+    rows = invoice_rows(qs)
+    if not include_paid:
+        rows = [r for r in rows if r['status'] != 'paid']
+    deals_by_id = {d.id: d for d in Deal.objects.filter(pk__in={r['deal'] for r in rows}).select_related('client')}
+    open_rows = [r for r in rows if r['status'] != 'paid']
+    return {'rows': _with_deal(rows, deals_by_id), 'totals': _totals(open_rows)}
+
+
+def payables(user, include_paid=False):
+    deals = _deals_for(user)
+    rows = payable_rows(_payables_qs().filter(deal__in=deals).order_by('due_date', 'id'))
+    if not include_paid:
+        rows = [r for r in rows if r['status'] != 'paid']
+    deals_by_id = {d.id: d for d in Deal.objects.filter(pk__in={r['deal'] for r in rows}).select_related('client')}
+    open_rows = [r for r in rows if r['status'] != 'paid']
+    return {'rows': _with_deal(rows, deals_by_id), 'totals': _totals(open_rows)}
+
+
+# ── Tracking board ──────────────────────────────────────────────────────────
+def _n_days(n):
+    return f'{n} day' if n == 1 else f'{n} days'
+
+
+def board_entries(deals_qs, today):
+    out = []
+    by_id = {d.id: d for d in deals_qs.select_related('client')}
+    for r in invoice_rows(ClientInvoice.objects.filter(deal__in=deals_qs, cancelled=False), today):
+        if r['status'] == 'paid' or not r['days_overdue']:
+            continue
+        d = by_id[r['deal']]
+        out.append({
+            'kind': 'receivable', 'id': r['id'], 'deal_id': d.id, 'deal_reference': d.reference,
+            'client_name': d.client.dropdown_name,
+            'title': f'Client invoice {r["number"]}', 'subtitle': r['description'],
+            'amount_info': f'{r["currency"]} {r["balance"]:,.2f} still to collect'
+                           + (f' of {r["amount"]:,.2f}' if r['paid'] else ''),
+            'status': 'overdue', 'status_label': 'Payment overdue',
+            'due_date': date.fromisoformat(r['due_date']), 'due_label': 'Due',
+            'flags': [{'level': 'late', 'text': f'Client payment {_n_days(r["days_overdue"])} overdue'}],
+        })
+    for r in payable_rows(_payables_qs().filter(deal__in=deals_qs), today):
+        if r['status'] == 'paid':
+            continue
+        if r['days_overdue']:
+            flag = ('late', f'Payment to {r["payee"] or "supplier"} {_n_days(r["days_overdue"])} overdue')
+        elif r['days_to_due'] is not None and r['days_to_due'] <= DUE_SOON_DAYS:
+            flag = ('warn', 'Due today' if r['days_to_due'] == 0 else f'Due in {_n_days(r["days_to_due"])}')
+        else:
+            continue
+        d = by_id[r['deal']]
+        out.append({
+            'kind': 'payable', 'id': r['id'], 'deal_id': d.id, 'deal_reference': d.reference,
+            'client_name': d.client.dropdown_name,
+            'title': f'Pay {r["payee"] or "supplier"}',
+            'subtitle': ', '.join(x for x in (r['po_number'] or r['cost_label'],
+                                              r['invoice_ref'] and f'invoice {r["invoice_ref"]}') if x),
+            'amount_info': f'{r["currency"]} {r["balance"]:,.2f} to pay',
+            'status': 'to_pay', 'status_label': 'To pay',
+            'due_date': date.fromisoformat(r['due_date']), 'due_label': 'Due',
+            'flags': [{'level': flag[0], 'text': flag[1]}],
+        })
+    # Goods received from every supplier, but the client hasn't been invoiced.
+    from apps.logistics.models import SupplierOrder
+    for d in deals_qs.filter(deal_status='active').select_related('client'):
+        orders = [o for o in SupplierOrder.objects.filter(deal=d).exclude(status='cancelled')]
+        if not orders or any(o.status != 'received' for o in orders):
+            continue
+        if ClientInvoice.objects.filter(deal=d, cancelled=False).exists():
+            continue
+        out.append({
+            'kind': 'deal', 'id': d.id, 'deal_id': d.id, 'deal_reference': d.reference,
+            'client_name': d.client.dropdown_name,
+            'title': 'Invoice the client', 'subtitle': 'All supplier orders received',
+            'status': 'to_invoice', 'status_label': 'To invoice',
+            'due_date': None, 'due_label': None,
+            'flags': [{'level': 'warn', 'text': "Goods received, client not invoiced yet"}],
+        })
+    return out
+
+
+# ── Cost invoices → payables ────────────────────────────────────────────────
+def sync_cost_payable(cost):
+    """Keep a payable in step with a deal cost's invoice (its actual amount)."""
+    p = Payable.objects.filter(deal_cost=cost).first()
+    if cost.actual_amount is None:
+        if p and not p.payments.exists():
+            p.delete()
+        elif p:
+            p.deal_cost = None   # already paid something: keep the record, unlinked
+            p.save(update_fields=['deal_cost'])
+        return
+    inv_date = cost.invoice_date or timezone.localdate()
+    if not p:
+        p = Payable(deal=cost.deal, kind='cost', deal_cost=cost, due_date=inv_date)
+    p.payee = cost.payee or p.payee
+    p.invoice_ref = cost.invoice_ref
+    p.invoice_date = inv_date
+    p.amount = cost.actual_amount
+    p.currency = cost.currency
+    if p.due_date < p.invoice_date:
+        p.due_date = p.invoice_date
+    p.save()

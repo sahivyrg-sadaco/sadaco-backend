@@ -50,7 +50,7 @@ def add_typical(request, pk):
     created = services.add_typical(deal, request.user)
     if created:
         _log(deal, request.user, f'Typical costs for {deal.incoterm} added: '
-             + ', '.join(c.get_category_display().lower() for c in created) + '.')
+             + ', '.join(c.get_category_display() for c in created) + '.')
     data = _payload(deal)
     data['created'] = len(created)
     return Response(data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -96,6 +96,6 @@ def cost_detail(request, cid):
         c.overrun_acknowledged = False   # a new invoice amount deserves a fresh look
         c.save(update_fields=['overrun_acknowledged'])
         if not had_actual and c.actual_amount is not None:
-            _log(deal, request.user, f'Invoice recorded for {c.get_category_display().lower()}: '
+            _log(deal, request.user, f'Invoice recorded for {c.get_category_display()}: '
                  f'{c.currency} {c.actual_amount:,.2f}.')
     return Response(_payload(deal))

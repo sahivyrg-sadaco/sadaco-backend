@@ -6,6 +6,7 @@ Business rules for supplier orders and shipments:
   - the tracking board and "needs attention" reminders
 """
 from collections import defaultdict
+from datetime import date
 from decimal import Decimal
 
 from django.db import transaction
@@ -358,11 +359,19 @@ def build_board(user):
     entries += _cost_entries(deals)
     from apps.rfqs.services import board_entries as rfq_entries
     entries += rfq_entries(deals, today)
+    from apps.finance.services import board_entries as money_entries
+    entries += money_entries(deals, today)
+
+    # Every source must give real dates; tolerate text so one bad entry can't break the board.
+    for e in entries:
+        if isinstance(e['due_date'], str):
+            e['due_date'] = date.fromisoformat(e['due_date'][:10])
 
     def sort_key(e):
         severity = 0 if any(f['level'] == 'late' for f in e['flags']) else (1 if e['flags'] else 2)
         return (severity, e['due_date'] is None, e['due_date'] or today, e['deal_reference'] or '')
     entries.sort(key=sort_key)
     for e in entries:
-        e['due_date'] = e['due_date'].isoformat() if e['due_date'] else None
+        d = e['due_date']
+        e['due_date'] = d.isoformat() if hasattr(d, 'isoformat') else d
     return {'today': today.isoformat(), 'entries': entries}
