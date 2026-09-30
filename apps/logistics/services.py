@@ -356,6 +356,8 @@ def build_board(user):
     entries += [_shipment_entry(s, today) for s in ships]
     entries += _deal_entries(deals, today)
     entries += _cost_entries(deals)
+    from apps.rfqs.services import board_entries as rfq_entries
+    entries += rfq_entries(deals, today)
 
     def sort_key(e):
         severity = 0 if any(f['level'] == 'late' for f in e['flags']) else (1 if e['flags'] else 2)
