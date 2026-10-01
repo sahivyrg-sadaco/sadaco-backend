@@ -86,11 +86,19 @@ def client_money(deal):
 
 
 # ── Checks for specific actions ─────────────────────────────────────────────
+def for_creating_orders(deal):
+    """Gates for creating supplier orders: the client's PO must be processed."""
+    from apps.clientquotes.services import po_status
+    s = po_status(deal)
+    return [] if s['processed'] else [{'code': 'client_po', 'message': s['message']}]
+
+
 def for_order_status(order, new_status):
     """Gates for changing a supplier order's status by hand."""
     out = []
     old = order.status
     if old == 'draft' and new_status not in ('draft', 'cancelled'):
+        out += for_creating_orders(order.deal)
         c = client_money(order.deal)
         if c['advance_missing']:
             out.append({'code': 'client_advance', 'message': c['advance_missing']})

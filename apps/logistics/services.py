@@ -366,6 +366,8 @@ def build_board(user):
     entries += rfq_entries(deals, today)
     from apps.finance.services import board_entries as money_entries
     entries += money_entries(deals, today)
+    from apps.clientquotes.services import board_entries as quote_entries
+    entries += quote_entries(deals, today)
 
     # Every source must give real dates; tolerate text so one bad entry can't break the board.
     for e in entries:

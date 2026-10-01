@@ -43,6 +43,7 @@ class DealOrdersView(_WriteRoles, APIView):
     def get(self, request, pk):
         deal = get_object_or_404(Deal, pk=pk)
         orders = list(_orders_qs().filter(deal=deal))
+        from apps.clientquotes.services import po_status
         from apps.finance import gates
         return Response({
             'orders': SupplierOrderSerializer(orders, many=True).data,
@@ -51,6 +52,7 @@ class DealOrdersView(_WriteRoles, APIView):
             'payment': {
                 'orders': {o.id: gates.order_money(o) for o in orders},
                 'client': gates.client_money(deal),
+                'client_po': po_status(deal),
             },
         })
 
@@ -59,6 +61,10 @@ class DealOrdersFromAwardsView(_WriteRoles, APIView):
     """POST /api/deals/{id}/orders/from-awards/ → create draft orders for all pending awards."""
     def post(self, request, pk):
         deal = get_object_or_404(Deal, pk=pk)
+        from apps.finance import gates
+        blocked = gates.enforce(request, deal, gates.for_creating_orders(deal))
+        if blocked:
+            return blocked
         touched = services.create_orders_from_awards(deal, request.user)
         if not touched:
             return Response({'error': 'Every awarded item is already on a supplier order.'},
