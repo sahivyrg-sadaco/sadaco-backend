@@ -15,4 +15,5 @@ urlpatterns = [
     path('payable-payments/<int:xid>/',       views.payable_payment_delete),
     path('finance/receivables/',              views.receivables),
     path('finance/payables/',                 views.payables),
+    path('<str:owner>/<int:oid>/payment-plan/', views.payment_plan),
 ]

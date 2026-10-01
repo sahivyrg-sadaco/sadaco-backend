@@ -308,3 +308,59 @@ def receivables(request):
 def payables(request):
     """GET /api/finance/payables/?all=1"""
     return Response(services.payables(request.user, include_paid=request.query_params.get('all') == '1'))
+
+
+# ── Payment plans ────────────────────────────────────────────────────────────
+from . import plans as _plans  # noqa: E402
+from .models import PaymentPlan  # noqa: E402
+
+PLAN_OWNERS = {
+    'suppliers': ('suppliers.Supplier', 'supplier', ('admin', 'finance', 'operations')),
+    'clients':   ('clients.Client', 'client', ('admin', 'finance', 'sales')),
+    'orders':    ('logistics.SupplierOrder', 'supplier_order', ('admin', 'finance', 'operations', 'sales')),
+    'deals':     ('deals.Deal', 'deal', ('admin', 'finance', 'sales')),
+}
+
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def payment_plan(request, owner, oid):
+    """
+    GET/PUT /api/{suppliers|clients|orders|deals}/{id}/payment-plan/
+    GET → { steps, text, source, own }   (own = set on this record, not inherited)
+    PUT { steps } saves; PUT { steps: null } removes it (inherit / read from terms again).
+    """
+    from django.apps import apps as django_apps
+    if owner not in PLAN_OWNERS:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    model_label, field, roles = PLAN_OWNERS[owner]
+    obj = get_object_or_404(django_apps.get_model(model_label), pk=oid)
+
+    if request.method == 'PUT':
+        if (r := _forbid(request, roles)):
+            return r
+        steps = request.data.get('steps')
+        if steps is None:
+            PaymentPlan.objects.filter(**{field: obj}).delete()
+        else:
+            try:
+                clean = _plans.validate(steps)
+            except ValueError as e:
+                return _bad(str(e), 'steps')
+            PaymentPlan.objects.update_or_create(**{field: obj}, defaults={'steps': clean})
+        deal = obj if field == 'deal' else getattr(obj, 'deal', None)
+        if deal is not None:
+            what = 'client payment terms' if field == 'deal' else f'payment terms for {obj.po_number}'
+            services.log(deal, request.user, f'Changed {what}: '
+                         + (_plans.describe(clean) if steps is not None else 'back to the usual terms') + '.')
+        obj.refresh_from_db()
+
+    own = PaymentPlan.objects.filter(**{field: obj}).first()
+    if field == 'supplier_order':
+        steps, source = _plans.for_order(obj)
+    elif field == 'deal':
+        steps, source = _plans.for_deal(obj)
+    else:
+        steps = own.steps if own else (_plans.from_text(obj.payment_terms) or None)
+        source = field if own else ('terms' if steps else 'none')
+    return Response({'steps': steps, 'text': _plans.describe(steps) if steps else '', 'source': source, 'own': bool(own)})

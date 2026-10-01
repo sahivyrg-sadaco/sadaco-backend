@@ -75,6 +75,34 @@ def invoice_rows(invoices, today=None):
     return rows
 
 
+def installments(p, paid):
+    """
+    Split a goods invoice by its order's payment plan. Payments fill the steps
+    in order. Each step's due date: invoice date (on order / before shipping),
+    shipped date + N days (after shipping), received date (on delivery);
+    None while the event hasn't happened.
+    """
+    from . import plans
+    order = p.supplier_order
+    steps, source = plans.for_order(order)
+    left = paid
+    out = []
+    for st in steps:
+        amt = round(float(p.amount) * st['pct'] / 100, 2)
+        if st['when'] in plans.PRE_SHIPPING:
+            due = p.invoice_date
+        elif st['when'] == 'after_shipping':
+            due = order.shipped_date + timedelta(days=st.get('days', 0)) if order.shipped_date else None
+        else:
+            due = order.received_date
+        covered = min(left, amt)
+        left -= covered
+        out.append({**st, 'amount': amt, 'paid': round(covered, 2),
+                    'due_date': due.isoformat() if due else None,
+                    'status': 'paid' if covered >= amt - 0.005 else ('partial' if covered > 0 else 'open')})
+    return out, plans.describe(steps), source
+
+
 def payable_rows(payables, today=None):
     today = today or timezone.localdate()
     rows = []
@@ -82,7 +110,18 @@ def payable_rows(payables, today=None):
         plist = list(p.payments.all())
         paid = sum(float(x.amount) for x in plist)
         status, balance = _status(p.amount, paid)
-        overdue, days_to_due = _due_info(p.due_date, status, today)
+        inst, plan_text, plan_source, next_note = None, None, None, None
+        due = p.due_date
+        if p.kind == 'goods' and p.supplier_order_id and status != 'paid':
+            inst, plan_text, plan_source = installments(p, paid)
+            nxt = next((i for i in inst if i['status'] != 'paid'), None)
+            if nxt and nxt['due_date']:
+                due = date.fromisoformat(nxt['due_date'])
+            elif nxt:
+                due = None
+                next_note = (f'{nxt["pct"]:g}% due {nxt.get("days", 0)} days after shipping'
+                             if nxt['when'] == 'after_shipping' else f'{nxt["pct"]:g}% due on delivery')
+        overdue, days_to_due = _due_info(due, status, today)
         cost = p.deal_cost
         rows.append({
             'id': p.id, 'deal': p.deal_id, 'kind': p.kind,
@@ -93,7 +132,9 @@ def payable_rows(payables, today=None):
             'deal_cost': p.deal_cost_id,
             'cost_label': (cost.get_category_display() + (f' ({cost.description})' if cost.description else '')) if cost else None,
             'invoice_ref': p.invoice_ref, 'invoice_date': p.invoice_date.isoformat(),
-            'due_date': p.due_date.isoformat(), 'payment_terms': p.payment_terms,
+            'due_date': (due or p.due_date).isoformat(), 'due_known': due is not None,
+            'next_due_note': next_note, 'installments': inst, 'plan_text': plan_text, 'plan_source': plan_source,
+            'payment_terms': p.payment_terms,
             'amount': float(p.amount), 'currency': p.currency, 'paid': round(paid, 2), 'balance': balance,
             'status': status, 'days_overdue': overdue or 0, 'days_to_due': days_to_due, 'notes': p.notes,
             'payments': [{'id': x.id, 'amount': float(x.amount), 'payment_date': x.payment_date.isoformat(),
@@ -107,45 +148,52 @@ def _payables_qs():
 
 
 # ── Suggestions for the next client invoice ─────────────────────────────────
+STEP_LABEL = {
+    'on_order':        ('Advance', 'Anticipo'),
+    'before_shipping': ('Before shipping', 'Antes del envío'),
+    'after_shipping':  ('Balance', 'Saldo'),
+    'on_delivery':     ('On delivery', 'Contra entrega'),
+}
+
+
 def invoice_suggestions(deal, invoiced_total):
     """
-    What's left to bill, split by the deal's payment terms when they state
-    percentages (e.g. '30% anticipado / 70% contra entrega').
+    What's left to bill, following the client's payment plan: after the 30%
+    advance is invoiced, the next suggestion is the next step, and so on.
     """
     from apps.costs.services import compute
+    from . import plans
     revenue = compute(deal)['estimate']['revenue']
     remaining = round(revenue - invoiced_total, 2)
-    terms = deal.payment_terms or ''
-    pcts = [int(x) for x in re.findall(r'(\d{1,3})\s*%', terms)]
+    steps, source = plans.for_deal(deal)
     sugg = []
     if remaining > 0.005:
-        # With split terms, continue the sequence from wherever invoicing has reached
-        # (e.g. after the 30% advance, suggest the 70% balance).
-        start = None
-        if len(pcts) >= 2 and sum(pcts) == 100:
-            done = 0.0
-            for k, p in enumerate(pcts):
-                if abs(invoiced_total - done) < 0.01:
-                    start = k
-                    break
-                done += revenue * p / 100
-        if start is not None:
-            labels = [('Advance', 'Anticipo'), ('Balance', 'Saldo')] + [('Part', 'Parte')] * 5
-            on_delivery = 'entrega' in terms.lower() or 'delivery' in terms.lower()
-            for k in range(start, len(pcts)):
-                p = pcts[k]
-                en, es = labels[min(k, len(labels) - 1)] if len(pcts) == 2 or k < 2 else ('Part', 'Parte')
-                sugg.append({'description': f'{en} {p}% ({es} {p}%)', 'amount': round(revenue * p / 100, 2),
-                             'due_on_invoice': k == 0 or on_delivery})
+        start, done = None, 0.0
+        for k, st in enumerate(steps):
+            if abs(invoiced_total - done) < 0.01:
+                start = k
+                break
+            done += revenue * st['pct'] / 100
+        if start is not None and len(steps) > 1:
+            for st in steps[start:]:
+                en, es = STEP_LABEL[st['when']]
+                days = st.get('days', 0) if st['when'] == 'after_shipping' else 0
+                tail_en = f', {days} days' if days else ''
+                tail_es = f', {days} días' if days else ''
+                sugg.append({'description': f'{en} {st["pct"]:g}%{tail_en} ({es} {st["pct"]:g}%{tail_es})',
+                             'amount': round(revenue * st['pct'] / 100, 2), 'due_days': days,
+                             'due_on_invoice': days == 0})
         else:
+            days = steps[0].get('days', 0) if len(steps) == 1 and steps[0]['when'] == 'after_shipping' else 0
             sugg.append({'description': 'Balance (Saldo)' if invoiced_total > 0 else 'Invoice (Factura)',
-                         'amount': remaining, 'due_on_invoice': False})
+                         'amount': remaining, 'due_days': days, 'due_on_invoice': days == 0})
     n = ClientInvoice.objects.filter(deal=deal).count() + 1
     base = deal.reference or f'D{deal.pk}'
     while ClientInvoice.objects.filter(number=f'{base}-F{n}').exists():
         n += 1
     return {'revenue': round(revenue, 2), 'invoiced': round(invoiced_total, 2), 'remaining': remaining,
-            'suggestions': sugg, 'next_number': f'{base}-F{n}'}
+            'suggestions': sugg, 'next_number': f'{base}-F{n}',
+            'plan_text': plans.describe(steps), 'plan_source': source}
 
 
 # ── Per-deal view ────────────────────────────────────────────────────────────
@@ -188,7 +236,13 @@ def deal_money(deal):
         },
         'suppliers': [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in c.items()} for c in by_cur.values()],
         'next_invoice': invoice_suggestions(deal, invoiced),
+        'client_gate': _client_gate(deal),
     }
+
+
+def _client_gate(deal):
+    from .gates import client_money
+    return client_money(deal)
 
 
 # ── Company-wide lists ──────────────────────────────────────────────────────
@@ -285,6 +339,23 @@ def board_entries(deals_qs, today):
             'due_date': date.fromisoformat(r['due_date']), 'due_label': 'Due',
             'flags': [{'level': flag[0], 'text': flag[1]}],
         })
+    # Deals waiting on the client's advance before supplier orders can go out.
+    # (Orders waiting on a supplier invoice are flagged on their own board row.)
+    from .gates import client_money
+    for d in deals_qs.filter(deal_status='active', supplier_orders__status='draft').distinct().select_related('client'):
+        c = client_money(d)
+        if c['advance_met']:
+            continue
+        out.append({
+            'kind': 'deal', 'id': d.id, 'deal_id': d.id, 'deal_reference': d.reference,
+            'client_name': d.client.dropdown_name,
+            'title': "Waiting for the client's advance", 'subtitle': f'Terms: {c["plan_text"]}',
+            'status': 'awaiting_advance', 'status_label': 'Advance needed',
+            'due_date': None, 'due_label': None,
+            'flags': [{'level': 'warn', 'text':
+                       f'{c["currency"]} {c["advance_required"] - c["received"]:,.2f} to receive before ordering from suppliers'}],
+        })
+
     # Goods received from every supplier, but the client hasn't been invoiced.
     from apps.logistics.models import SupplierOrder
     for d in deals_qs.filter(deal_status='active').select_related('client'):

@@ -42,10 +42,16 @@ class DealOrdersView(_WriteRoles, APIView):
     """GET /api/deals/{id}/orders/ → { orders, pending_awards }"""
     def get(self, request, pk):
         deal = get_object_or_404(Deal, pk=pk)
-        orders = _orders_qs().filter(deal=deal)
+        orders = list(_orders_qs().filter(deal=deal))
+        from apps.finance import gates
         return Response({
             'orders': SupplierOrderSerializer(orders, many=True).data,
             'pending_awards': services.pending_awards(deal),
+            # Payment readiness: per order (supplier side) and for the client.
+            'payment': {
+                'orders': {o.id: gates.order_money(o) for o in orders},
+                'client': gates.client_money(deal),
+            },
         })
 
 
@@ -72,6 +78,12 @@ class OrderDetailView(_WriteRoles, APIView):
         old_status = order.status
         ser = SupplierOrderSerializer(order, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
+        new_status = ser.validated_data.get('status', old_status)
+        if new_status != old_status:
+            from apps.finance import gates
+            blocked = gates.enforce(request, order.deal, gates.for_order_status(order, new_status))
+            if blocked:
+                return blocked
         order = ser.save()
         if order.status != old_status:
             services.stamp_order_status(order, old_status)
@@ -103,6 +115,13 @@ class DealShipmentsView(_WriteRoles, APIView):
         deal = get_object_or_404(Deal, pk=pk)
         ser = ShipmentSerializer(data=request.data, context={'deal': deal})
         ser.is_valid(raise_exception=True)
+        v = ser.validated_data
+        from apps.finance import gates
+        blocked = gates.enforce(request, deal, gates.for_shipment(
+            deal, old_status=None, new_status=v.get('status', 'planned'), mode=v.get('mode', 'courier'),
+            tracking=v.get('tracking_number', ''), leg=v.get('leg', 'to_miami'), orders=v.get('orders', [])))
+        if blocked:
+            return blocked
         shipment = ser.save(deal=deal, created_by=request.user)
         mark_progress(shipment, ['status'])
         services.after_shipment_change(shipment, None, request.user)
@@ -126,6 +145,14 @@ class ShipmentDetailView(_WriteRoles, APIView):
                                                      'arrived_date', 'tracking_number')}
         ser = ShipmentSerializer(shipment, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
+        v = ser.validated_data
+        from apps.finance import gates
+        blocked = gates.enforce(request, shipment.deal, gates.for_shipment(
+            shipment.deal, old_status=shipment.status, new_status=v.get('status', shipment.status),
+            mode=v.get('mode', shipment.mode), tracking=v.get('tracking_number', shipment.tracking_number),
+            leg=v.get('leg', shipment.leg), orders=v.get('orders', list(shipment.orders.all()))))
+        if blocked:
+            return blocked
         shipment = ser.save()
         changed = [f for f, v in before.items() if getattr(shipment, f) != v]
         mark_progress(shipment, changed)

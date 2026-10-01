@@ -230,6 +230,11 @@ def _order_entry(o, today):
             flags.append(('warn', f'Ready for {_n_days(_days(today, since))}, no shipment arranged'))
     if o.status == 'shipped' and not open_ship:
         flags.append(('warn', 'Marked shipped, but no shipment or tracking recorded'))
+    if o.status in ('sent', 'confirmed', 'ready'):
+        from apps.finance.gates import order_money
+        m = order_money(o)
+        if not m['invoiced'] and not m['ready_to_ship']:
+            flags.append(('warn', "Supplier's invoice not recorded; payment is due before shipping"))
 
     due, due_label = None, None
     if o.status in ('draft', 'sent', 'confirmed'):

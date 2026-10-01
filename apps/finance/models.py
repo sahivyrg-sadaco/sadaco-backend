@@ -82,3 +82,27 @@ class PayablePayment(models.Model):
     class Meta:
         db_table = 'payable_payments'
         ordering = ['payment_date', 'id']
+
+
+class PaymentPlan(models.Model):
+    """
+    A payment schedule. Exactly one owner is set:
+      supplier / client       → their usual terms (the credit they give or get)
+      supplier_order / deal   → the terms for that one order or deal
+
+    steps: [{"pct": 50, "when": "on_order"}, {"pct": 50, "when": "after_shipping", "days": 30}]
+    when ∈ on_order | before_shipping | after_shipping | on_delivery
+    """
+    supplier       = models.OneToOneField('suppliers.Supplier', null=True, blank=True,
+                                          on_delete=models.CASCADE, related_name='payment_plan')
+    client         = models.OneToOneField('clients.Client', null=True, blank=True,
+                                          on_delete=models.CASCADE, related_name='payment_plan')
+    supplier_order = models.OneToOneField('logistics.SupplierOrder', null=True, blank=True,
+                                          on_delete=models.CASCADE, related_name='payment_plan')
+    deal           = models.OneToOneField('deals.Deal', null=True, blank=True,
+                                          on_delete=models.CASCADE, related_name='payment_plan')
+    steps          = models.JSONField(default=list)
+    updated_at     = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'payment_plans'
