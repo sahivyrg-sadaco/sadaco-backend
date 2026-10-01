@@ -61,15 +61,36 @@ def add_typical(request, pk):
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated])
 def cost_settings(request, pk):
-    """PUT /api/deals/{id}/cost-settings/ { default_treatment } — '' goes back to the incoterm default."""
+    """
+    PUT /api/deals/{id}/cost-settings/ { default_treatment?, target_margin_pct? }
+    Send '' / null for either to go back to the company standard.
+    """
+    from decimal import Decimal, InvalidOperation
     deal = get_object_or_404(Deal, pk=pk)
-    t = request.data.get('default_treatment') or ''
-    if t and t not in dict(TREATMENTS):
-        return Response({'error': 'Unknown option.'}, status=status.HTTP_400_BAD_REQUEST)
-    if t:
-        DealCostSettings.objects.update_or_create(deal=deal, defaults={'default_treatment': t})
+    s, _ = DealCostSettings.objects.get_or_create(deal=deal)
+    d = request.data
+    if 'default_treatment' in d:
+        t = d.get('default_treatment') or ''
+        if t and t not in dict(TREATMENTS):
+            return Response({'error': 'Unknown option.'}, status=status.HTTP_400_BAD_REQUEST)
+        s.default_treatment = t
+    if 'target_margin_pct' in d:
+        v = d.get('target_margin_pct')
+        if v in (None, ''):
+            s.target_margin = None
+        else:
+            try:
+                pct = Decimal(str(v))
+            except (InvalidOperation, ValueError):
+                return Response({'target_margin_pct': ['Enter a percentage.']}, status=status.HTTP_400_BAD_REQUEST)
+            if not (0 <= pct < 100):
+                return Response({'target_margin_pct': ['Use a margin from 0 to 99%.']}, status=status.HTTP_400_BAD_REQUEST)
+            s.target_margin = (pct / 100).quantize(Decimal('0.0001'))
+            _log(deal, request.user, f'Target margin for this deal set to {pct:g}%.')
+    if not s.default_treatment and s.target_margin is None and not s.transit_days:
+        s.delete()
     else:
-        DealCostSettings.objects.filter(deal=deal).delete()
+        s.save()
     return Response(_payload(deal))
 
 
@@ -125,9 +146,8 @@ def freight_estimate(request, pk):
                                             request.user)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        if not written:
-            return Response({'error': 'Enter a rate per kg for at least one leg.'}, status=status.HTTP_400_BAD_REQUEST)
-        _log(deal, request.user, 'Freight estimated by weight: '
-             + '; '.join(f'{c.get_category_display()} {c.currency} {c.estimate_amount:,.2f}' for c in written) + '.')
+        if written:
+            _log(deal, request.user, 'Freight estimated by weight: '
+                 + '; '.join(f'{c.get_category_display()} {c.currency} {c.estimate_amount:,.2f}' for c in written) + '.')
         return Response({'estimate': freight.item_logistics(deal), **_payload(deal)})
     return Response({'estimate': freight.item_logistics(deal)})

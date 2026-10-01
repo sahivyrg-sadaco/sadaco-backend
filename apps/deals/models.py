@@ -71,7 +71,7 @@ class DealItem(models.Model):
     qty          = models.DecimalField(max_digits=18, decimal_places=4)
     unit         = models.CharField(max_length=50, blank=True)
     unit_cost    = models.DecimalField(max_digits=18, decimal_places=4, default=0)
-    margin_pct   = models.DecimalField(max_digits=8,  decimal_places=4, default=0.15)
+    margin_pct   = models.DecimalField(max_digits=8,  decimal_places=4, default=0.50)   # company policy
     unit_price   = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     parent_item  = models.ForeignKey(
         'self', null=True, blank=True,

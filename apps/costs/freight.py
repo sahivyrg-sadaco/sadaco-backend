@@ -90,10 +90,13 @@ def item_logistics(deal):
             'unit_kg': weight, 'weight_source': wsrc, 'lead_time_days': lead, 'lead_source': lsrc,
         })
     rows = {c.category: c for c in DealCost.objects.filter(deal=deal, basis='weight')}
+    from .models import DealCostSettings
+    settings_obj = DealCostSettings.objects.filter(deal=deal).first()
+    transit = (settings_obj.transit_days if settings_obj else None) or {}
     legs = []
     for key, label in LEGS:
         c = rows.get(key)
-        legs.append({'category': key, 'label': label,
+        legs.append({'category': key, 'label': label, 'transit_days': transit.get(key),
                      'rate_per_kg': _f(c.weight_rate) if c else None,
                      'min_charge': _f(c.weight_minimum) if c else None,
                      'estimate': _f(c.estimate_amount) if c else None})
@@ -114,6 +117,20 @@ def save_estimate(deal, lines_in, legs_in, user):
         rows.append({'deal_item': it.id, 'n': k, 'description': it.description[:80],
                      'unit_kg': w, 'kg': round((w or 0) * float(it.qty), 3)})
     total_kg = sum(r['kg'] for r in rows)
+    # Transit days are kept for the quoted delivery time, whether or not a rate is given.
+    from .models import DealCostSettings
+    transit = {}
+    for leg in legs_in:
+        if leg.get('category') in LEG_LABEL and leg.get('transit_days') not in (None, ''):
+            try:
+                transit[leg['category']] = max(0, int(leg['transit_days']))
+            except (TypeError, ValueError):
+                raise ValueError('Transit times must be whole days.')
+    if transit or DealCostSettings.objects.filter(deal=deal).exists():
+        s, _ = DealCostSettings.objects.get_or_create(deal=deal)
+        s.transit_days = transit
+        s.save(update_fields=['transit_days'])
+
     written = []
     for leg in legs_in:
         cat = leg.get('category')

@@ -89,10 +89,20 @@ class DealCost(models.Model):
         return f'{self.get_category_display()}: {self.description or ""}'
 
 
+COMPANY_TARGET_MARGIN = 0.50   # company policy: 50% margin on the sell price
+
+
 class DealCostSettings(models.Model):
-    """Per-deal choice of how extra costs reach the client, when not derived from the incoterm."""
+    """
+    Per-deal settings that override company standards:
+      default_treatment  how extra costs reach the client (blank = company standard)
+      target_margin      margin on sell price for new lines (blank = company policy, 50%)
+      transit_days       {"freight_miami": 5, "freight_intl": 21}: used for the quoted delivery time
+    """
     deal              = models.OneToOneField('deals.Deal', on_delete=models.CASCADE, related_name='cost_settings')
-    default_treatment = models.CharField(max_length=10, choices=TREATMENTS)
+    default_treatment = models.CharField(max_length=10, choices=TREATMENTS, blank=True)
+    target_margin     = models.DecimalField(max_digits=6, decimal_places=4, null=True, blank=True)
+    transit_days      = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = 'deal_cost_settings'

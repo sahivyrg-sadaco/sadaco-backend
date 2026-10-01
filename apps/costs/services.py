@@ -50,9 +50,18 @@ def default_treatment(deal, settings_obj=None):
     """(treatment, source): the deal's own setting if it has one, otherwise the company standard."""
     # settings_obj: a DealCostSettings, False (known to have none), or None (look it up).
     s = settings_obj if settings_obj is not None else DealCostSettings.objects.filter(deal=deal).first()
-    if s:
+    if s and s.default_treatment:
         return s.default_treatment, 'set'
     return STANDARD_TREATMENT, 'standard'
+
+
+def target_margin(deal, settings_obj=None):
+    """(margin as a percentage, source): the deal's own target, else company policy."""
+    from .models import COMPANY_TARGET_MARGIN
+    s = settings_obj if settings_obj is not None else DealCostSettings.objects.filter(deal=deal).first()
+    if s and s.target_margin is not None:
+        return round(float(s.target_margin) * 100, 2), 'deal'
+    return round(COMPANY_TARGET_MARGIN * 100, 2), 'company'
 
 
 def to_deal_currency(amount, cost, deal):
@@ -173,9 +182,12 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
         elif all(values['est'][c.id] == 0 and c.actual_amount is None for c in cat_rows):
             checklist.append({'category': cat_key, 'label': CATEGORY_LABEL[cat_key], 'problem': 'no_amount'})
 
+    margin_pct, margin_source = target_margin(deal, settings_obj)
     return {
         'currency': deal.currency,
         'incoterm': term or None,
+        'target_margin_pct': margin_pct,
+        'target_margin_source': margin_source,
         'default_treatment': treatment_default,
         'default_treatment_source': treatment_source,
         'items_sell': round(sell, 2),
