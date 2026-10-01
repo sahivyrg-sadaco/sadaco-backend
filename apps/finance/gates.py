@@ -60,9 +60,9 @@ def order_money(order):
 
 def client_money(deal):
     """Where the client stands against the deal's terms: advance and before-shipping shares."""
-    from apps.costs.services import compute
+    from .services import billing_base
     steps, source = plans.for_deal(deal)
-    revenue = compute(deal)['estimate']['revenue']
+    revenue, revenue_source = billing_base(deal)
     numbers = ClientInvoice.objects.filter(deal=deal, cancelled=False).values_list('number', flat=True)
     received = float(sum(p.amount for p in Payment.objects.filter(invoice_ref__in=list(numbers), deal=deal)))
     adv_pct, pre_pct = plans.on_order_pct(steps), plans.pre_shipping_pct(steps)
@@ -71,11 +71,12 @@ def client_money(deal):
     cur = deal.currency
     return {
         'steps': steps, 'plan_text': text, 'source': source, 'revenue': round(revenue, 2),
+        'revenue_source': revenue_source,
         'received': round(received, 2), 'currency': cur,
         'advance_pct': adv_pct, 'advance_required': adv_req,
         'advance_met': received >= adv_req - 0.01,
         'advance_missing': None if received >= adv_req - 0.01 else
-            f"Receive the client's advance first: {_m(cur, adv_req - received)} still due. "
+            f"Receive the client's payment due on order first: {_m(cur, adv_req - received)} still due. "
             f'Terms: {text}. Received so far: {_m(cur, received)}.',
         'before_shipping_required': pre_req,
         'before_shipping_met': received >= pre_req - 0.01,
@@ -87,10 +88,24 @@ def client_money(deal):
 
 # ── Checks for specific actions ─────────────────────────────────────────────
 def for_creating_orders(deal):
-    """Gates for creating supplier orders: the client's PO must be processed."""
+    """
+    Gates for creating (or sending) supplier orders: the client's PO must be
+    processed, and the share of the deal the terms put "on order" received.
+    """
     from apps.clientquotes.services import po_status
     s = po_status(deal)
-    return [] if s['processed'] else [{'code': 'client_po', 'message': s['message']}]
+    if not s['processed']:
+        return [{'code': 'client_po', 'message': s['message']}]
+    c = client_money(deal)
+    return [] if c['advance_met'] else [{'code': 'client_advance', 'message': c['advance_missing']}]
+
+
+def for_client_invoice(deal):
+    """Client invoices are issued against the client's processed PO."""
+    from apps.clientquotes.services import po_status
+    s = po_status(deal)
+    return [] if s['processed'] else [{'code': 'client_po', 'message':
+            "Record and process the client's purchase order before invoicing them."}]
 
 
 def for_order_status(order, new_status):
@@ -99,9 +114,6 @@ def for_order_status(order, new_status):
     old = order.status
     if old == 'draft' and new_status not in ('draft', 'cancelled'):
         out += for_creating_orders(order.deal)
-        c = client_money(order.deal)
-        if c['advance_missing']:
-            out.append({'code': 'client_advance', 'message': c['advance_missing']})
     if new_status in SHIPPED_STATUSES and old not in SHIPPED_STATUSES:
         m = order_money(order)
         if m['missing']:

@@ -148,6 +148,19 @@ def _payables_qs():
 
 
 # ── Suggestions for the next client invoice ─────────────────────────────────
+def billing_base(deal):
+    """
+    What the client owes in total, for invoicing and payment rules:
+    the processed PO's amount when it has one, else the deal's estimated revenue.
+    """
+    from apps.clientquotes.models import ClientPO
+    po = ClientPO.objects.filter(deal=deal, status='processed', amount__isnull=False).order_by('-processed_at').first()
+    if po:
+        return float(po.amount), 'po'
+    from apps.costs.services import compute
+    return compute(deal)['estimate']['revenue'], 'estimate'
+
+
 STEP_LABEL = {
     'on_order':        ('Advance', 'Anticipo'),
     'before_shipping': ('Before shipping', 'Antes del envío'),
@@ -161,9 +174,8 @@ def invoice_suggestions(deal, invoiced_total):
     What's left to bill, following the client's payment plan: after the 30%
     advance is invoiced, the next suggestion is the next step, and so on.
     """
-    from apps.costs.services import compute
     from . import plans
-    revenue = compute(deal)['estimate']['revenue']
+    revenue, revenue_source = billing_base(deal)
     remaining = round(revenue - invoiced_total, 2)
     steps, source = plans.for_deal(deal)
     sugg = []
@@ -191,7 +203,8 @@ def invoice_suggestions(deal, invoiced_total):
     base = deal.reference or f'D{deal.pk}'
     while ClientInvoice.objects.filter(number=f'{base}-F{n}').exists():
         n += 1
-    return {'revenue': round(revenue, 2), 'invoiced': round(invoiced_total, 2), 'remaining': remaining,
+    return {'revenue': round(revenue, 2), 'revenue_source': revenue_source,
+            'invoiced': round(invoiced_total, 2), 'remaining': remaining,
             'suggestions': sugg, 'next_number': f'{base}-F{n}',
             'plan_text': plans.describe(steps), 'plan_source': source}
 

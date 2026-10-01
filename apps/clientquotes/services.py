@@ -94,9 +94,9 @@ def po_status(deal):
         return {'processed': True, 'message': None}
     pending = [p for p in pos if p.status == 'received']
     if pending:
-        msg = f"Process the client's purchase order {pending[0].po_number} first (Client quote tab)."
+        msg = f"Process the client's purchase order {pending[0].po_number} first (Client invoicing tab)."
     else:
-        msg = "The client's purchase order hasn't been received and processed yet (Client quote tab)."
+        msg = "The client's purchase order hasn't been received and processed yet (Client invoicing tab)."
     return {'processed': False, 'message': msg}
 
 

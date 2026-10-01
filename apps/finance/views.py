@@ -80,6 +80,10 @@ def create_client_invoice(request, pk):
     deal = get_object_or_404(Deal, pk=pk)
     if (r := _forbid(request, INVOICE_ROLES)):
         return r
+    from . import gates
+    blocked = gates.enforce(request, deal, gates.for_client_invoice(deal))
+    if blocked:
+        return blocked
 
     def go():
         d = request.data
