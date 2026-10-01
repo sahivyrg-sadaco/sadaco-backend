@@ -17,10 +17,12 @@ def _log(deal, user, text):
 
 
 def _payload(deal):
+    from .freight import freight_by_item
     costs = list(DealCost.objects.filter(deal=deal).select_related('shipment'))
     return {
         'costs': DealCostSerializer(costs, many=True).data,
         'economics': services.compute(deal, costs=costs),
+        'freight_by_item': freight_by_item(deal),
     }
 
 
@@ -89,9 +91,15 @@ def cost_detail(request, cid):
 
     had_actual = c.actual_amount is not None
     old_actual = c.actual_amount
+    old_estimate = c.estimate_amount
     ser = DealCostSerializer(c, data=request.data, partial=True, context={'deal': deal})
     ser.is_valid(raise_exception=True)
     c = ser.save()
+    if c.basis == 'weight' and c.estimate_amount != old_estimate and old_estimate:
+        # Estimate edited by hand: scale the per-line split to match.
+        k = float(c.estimate_amount or 0) / float(old_estimate)
+        c.breakdown = [{**b, 'amount': round(float(b.get('amount') or 0) * k, 2)} for b in c.breakdown or []]
+        c.save(update_fields=['breakdown'])
     if c.actual_amount != old_actual:
         c.overrun_acknowledged = False   # a new invoice amount deserves a fresh look
         c.save(update_fields=['overrun_acknowledged'])
@@ -99,3 +107,27 @@ def cost_detail(request, cid):
             _log(deal, request.user, f'Invoice recorded for {c.get_category_display()}: '
                  f'{c.currency} {c.actual_amount:,.2f}.')
     return Response(_payload(deal))
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def freight_estimate(request, pk):
+    """
+    GET  /api/deals/{id}/freight-estimate/ → per-line weights and lead times, saved rates
+    POST { lines: [{deal_item, unit_kg}], legs: [{category, rate_per_kg, min_charge}] }
+         → writes the freight cost rows; returns { estimate, costs, economics, freight_by_item }
+    """
+    from . import freight
+    deal = get_object_or_404(Deal, pk=pk)
+    if request.method == 'POST':
+        try:
+            written = freight.save_estimate(deal, request.data.get('lines') or [], request.data.get('legs') or [],
+                                            request.user)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        if not written:
+            return Response({'error': 'Enter a rate per kg for at least one leg.'}, status=status.HTTP_400_BAD_REQUEST)
+        _log(deal, request.user, 'Freight estimated by weight: '
+             + '; '.join(f'{c.get_category_display()} {c.currency} {c.estimate_amount:,.2f}' for c in written) + '.')
+        return Response({'estimate': freight.item_logistics(deal), **_payload(deal)})
+    return Response({'estimate': freight.item_logistics(deal)})

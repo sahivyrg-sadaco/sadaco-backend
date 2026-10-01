@@ -6,11 +6,12 @@ class SupplierQuoteItemSerializer(serializers.ModelSerializer):
     class Meta:
         model  = SupplierQuoteItem
         fields = ['id', 'quote', 'deal_item',
-                  'unit_price', 'total_price', 'notes']
+                  'unit_price', 'total_price', 'notes', 'lead_time_days', 'unit_weight_kg']
         read_only_fields = ['id', 'total_price']
         extra_kwargs = {
             'unit_price':  {'coerce_to_string': False},
             'total_price': {'coerce_to_string': False},
+            'unit_weight_kg': {'coerce_to_string': False},
         }
 
 

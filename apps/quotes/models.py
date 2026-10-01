@@ -34,6 +34,9 @@ class SupplierQuoteItem(models.Model):
     unit_price  = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     total_price = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     notes       = models.TextField(blank=True)
+    # What this supplier says for this item: lead time and estimated weight per unit.
+    lead_time_days = models.IntegerField(null=True, blank=True)
+    unit_weight_kg = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
 
     class Meta:
         db_table = 'supplier_quote_items'

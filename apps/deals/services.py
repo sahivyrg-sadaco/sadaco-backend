@@ -127,9 +127,10 @@ def remove_item_split(parent_item_id: int, supplier_quote_id: int) -> bool:
 
 
 @transaction.atomic
-def upsert_quote_item(quote_id: int, deal_item_id: int, unit_price) -> int:
+def upsert_quote_item(quote_id: int, deal_item_id: int, unit_price, **extra) -> int:
     """
     INSERT-OR-UPDATE a supplier quote line. Returns the row id.
+    `extra` may hold lead_time_days and/or unit_weight_kg; keys not given are left as they are.
     """
     from apps.quotes.models import SupplierQuoteItem
 
@@ -141,9 +142,15 @@ def upsert_quote_item(quote_id: int, deal_item_id: int, unit_price) -> int:
         up = Decimal('0')
     total_price = round(up * qty, 4)
 
+    defaults = {'unit_price': up, 'total_price': total_price}
+    if 'lead_time_days' in extra:
+        v = extra['lead_time_days']
+        defaults['lead_time_days'] = int(v) if v not in (None, '') and int(v) >= 0 else None
+    if 'unit_weight_kg' in extra:
+        v = extra['unit_weight_kg']
+        defaults['unit_weight_kg'] = Decimal(str(v)) if v not in (None, '') and Decimal(str(v)) >= 0 else None
     qi, _ = SupplierQuoteItem.objects.update_or_create(
-        quote_id=quote_id, deal_item_id=deal_item_id,
-        defaults={'unit_price': up, 'total_price': total_price},
+        quote_id=quote_id, deal_item_id=deal_item_id, defaults=defaults,
     )
     return qi.id
 

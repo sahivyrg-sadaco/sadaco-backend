@@ -87,17 +87,21 @@ class DealQuoteItemListCreateView(APIView):
         return Response(SupplierQuoteItemSerializer(items, many=True).data)
 
     def post(self, request, pk, qid):
-        """Upsert a quote item — body: {deal_item_id, unit_price}."""
+        """Upsert a quote item — body: {deal_item_id, unit_price, lead_time_days?, unit_weight_kg?}."""
         if not SupplierQuote.objects.filter(deal_id=pk, pk=qid).exists():
             return Response({'error': 'Not found'}, status=404)
         try:
+            extra = {k: request.data[k] for k in ('lead_time_days', 'unit_weight_kg') if k in request.data}
             row_id = upsert_quote_item(
                 quote_id=qid,
                 deal_item_id=request.data['deal_item_id'],
                 unit_price=request.data.get('unit_price', 0),
+                **extra,
             )
         except KeyError as e:
             return Response({'error': f'missing field {e}'}, status=400)
+        except (ValueError, ArithmeticError):
+            return Response({'error': 'Lead time must be whole days and weight a number of kg.'}, status=400)
         qi = SupplierQuoteItem.objects.filter(pk=row_id).first()
         return Response(SupplierQuoteItemSerializer(qi).data,
                         status=status.HTTP_201_CREATED)

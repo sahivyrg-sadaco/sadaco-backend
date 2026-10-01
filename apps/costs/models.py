@@ -63,6 +63,12 @@ class DealCost(models.Model):
     invoice_date   = models.DateField(null=True, blank=True)
     overrun_acknowledged = models.BooleanField(default=False)
     notes          = models.TextField(blank=True)
+    # 'weight' when the estimate comes from the freight-by-weight estimator.
+    basis          = models.CharField(max_length=20, blank=True)
+    # Per-line split of the estimate: [{deal_item, n, description, kg, amount}]
+    breakdown      = models.JSONField(default=list, blank=True)
+    weight_rate    = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)  # per kg
+    weight_minimum = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
 
     # Where the cost came from, when it was created automatically.
     shipment       = models.ForeignKey('logistics.Shipment', null=True, blank=True,
