@@ -61,7 +61,9 @@ def _handle(fn):
         return _bad(msg, field)
 
 
-def _money_payload(deal):
+def _money_payload(deal, user=None):
+    from .stages import sync
+    sync(deal, user)
     return services.deal_money(deal)
 
 
@@ -103,7 +105,7 @@ def create_client_invoice(request, pk):
         except IntegrityError:
             raise ValueError(('number', 'Another invoice already uses this number.'))
         services.log(deal, request.user, f'Client invoice {inv.number} issued: {inv.currency} {inv.amount:,.2f}.')
-        return Response(_money_payload(deal), status=status.HTTP_201_CREATED)
+        return Response(_money_payload(deal, request.user), status=status.HTTP_201_CREATED)
     return _handle(go)
 
 
@@ -122,7 +124,7 @@ def client_invoice_detail(request, iid):
             return _bad('This invoice has payments. Cancel it instead, or delete the payments first.')
         services.log(deal, request.user, f'Client invoice {inv.number} deleted.')
         inv.delete()
-        return Response(_money_payload(deal))
+        return Response(_money_payload(deal, request.user))
 
     def go():
         d = request.data
@@ -151,7 +153,7 @@ def client_invoice_detail(request, iid):
             services.log(deal, request.user, f'Client invoice {inv.number} '
                          + ('cancelled.' if inv.cancelled else 'reinstated.'))
         inv.save()
-        return Response(_money_payload(deal))
+        return Response(_money_payload(deal, request.user))
     return _handle(go)
 
 
@@ -174,7 +176,7 @@ def client_payment(request, iid):
         services.log(inv.deal, request.user,
                      f'Payment received on {inv.number}: {p.currency} {p.amount:,.2f}'
                      + (f' ({p.method})' if p.method else '') + '.')
-        return Response(_money_payload(inv.deal), status=status.HTTP_201_CREATED)
+        return Response(_money_payload(inv.deal, request.user), status=status.HTTP_201_CREATED)
     return _handle(go)
 
 
@@ -188,7 +190,7 @@ def client_payment_delete(request, pid):
     deal = p.deal
     services.log(deal, request.user, f'Payment on {p.invoice_ref} of {p.currency} {p.amount:,.2f} removed.')
     p.delete()
-    return Response(_money_payload(deal) if deal else {})
+    return Response(_money_payload(deal, request.user) if deal else {})
 
 
 @api_view(['POST'])
@@ -222,7 +224,7 @@ def create_payable(request, pk):
             notes=str(d.get('notes') or ''), created_by=request.user)
         services.log(deal, request.user, f'Supplier invoice recorded for {order.po_number}: '
                      f'{p.currency} {p.amount:,.2f}, due {p.due_date:%b %d}.')
-        return Response(_money_payload(deal), status=status.HTTP_201_CREATED)
+        return Response(_money_payload(deal, request.user), status=status.HTTP_201_CREATED)
     return _handle(go)
 
 
@@ -241,7 +243,7 @@ def payable_detail(request, pid):
             return _bad('This invoice has payments. Delete the payments first.')
         services.log(deal, request.user, f'Supplier invoice {p.invoice_ref or ""} for {p.payee} deleted.'.replace('  ', ' '))
         p.delete()
-        return Response(_money_payload(deal))
+        return Response(_money_payload(deal, request.user))
 
     def go():
         d = request.data
@@ -260,7 +262,7 @@ def payable_detail(request, pid):
         if p.due_date < p.invoice_date:
             raise ValueError(('due_date', 'The due date is before the invoice date.'))
         p.save()
-        return Response(_money_payload(deal))
+        return Response(_money_payload(deal, request.user))
     return _handle(go)
 
 
@@ -281,7 +283,7 @@ def payable_payment(request, pid):
             notes=str(d.get('notes') or '').strip(), recorded_by=request.user)
         services.log(p.deal, request.user, f'Paid {p.payee or "supplier"}: {p.currency} {x.amount:,.2f}'
                      + (f' ({x.method})' if x.method else '') + '.')
-        return Response(_money_payload(p.deal), status=status.HTTP_201_CREATED)
+        return Response(_money_payload(p.deal, request.user), status=status.HTTP_201_CREATED)
     return _handle(go)
 
 
@@ -296,7 +298,7 @@ def payable_payment_delete(request, xid):
     services.log(deal, request.user, f'Payment to {x.payable.payee or "supplier"} of '
                  f'{x.payable.currency} {x.amount:,.2f} removed.')
     x.delete()
-    return Response(_money_payload(deal))
+    return Response(_money_payload(deal, request.user))
 
 
 # ── Company-wide ─────────────────────────────────────────────────────────────

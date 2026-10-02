@@ -97,6 +97,8 @@ class OrderDetailView(_WriteRoles, APIView):
             services.log(order.deal, request.user,
                          f'Supplier order {order.po_number}: {order.get_status_display().lower()}.')
         order = _orders_qs().get(pk=order.pk)
+        from apps.finance.stages import sync
+        sync(order.deal, request.user)
         return Response(SupplierOrderSerializer(order).data)
 
     def delete(self, request, oid):
@@ -135,6 +137,8 @@ class DealShipmentsView(_WriteRoles, APIView):
         _sync_cost(shipment)
         services.log(deal, request.user, f'Shipment added: {shipment.get_leg_display()}'
                      + (f', tracking {shipment.tracking_number}' if shipment.tracking_number else '') + '.')
+        from apps.finance.stages import sync
+        sync(deal, request.user)
         return Response(ShipmentSerializer(_ships_qs().get(pk=shipment.pk)).data,
                         status=status.HTTP_201_CREATED)
 
@@ -169,6 +173,8 @@ class ShipmentDetailView(_WriteRoles, APIView):
         if 'status' in changed:
             services.log(shipment.deal, request.user,
                          f'Shipment {shipment.get_leg_display()}: {shipment.get_status_display().lower()}.')
+        from apps.finance.stages import sync
+        sync(shipment.deal, request.user)
         return Response(ShipmentSerializer(_ships_qs().get(pk=shipment.pk)).data)
 
     @transaction.atomic

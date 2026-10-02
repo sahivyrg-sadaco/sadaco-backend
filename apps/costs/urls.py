@@ -9,4 +9,6 @@ urlpatterns = [
     path('deals/<int:pk>/cost-settings/', views.cost_settings),
     path('costs/<int:cid>/',              views.cost_detail),
     path('deals/<int:pk>/freight-estimate/', views.freight_estimate),
+    path('deals/<int:pk>/landed/',           views.landed_cost),
+    path('deals/<int:pk>/landed/apply/',     views.landed_apply),
 ]

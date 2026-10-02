@@ -1,5 +1,6 @@
 """Root URL configuration for SADACO ERP/CRM."""
 from django.contrib import admin
+from apps.core.search import search
 from django.urls import path, include
 from django.http import JsonResponse
 from django.db import connection
@@ -34,5 +35,6 @@ urlpatterns = [
     path('api/',                       include('apps.costs.urls')),
     path('api/',                       include('apps.rfqs.urls')),
     path('api/',                       include('apps.clientquotes.urls')),
+    path('api/search/',                search),
     path('api/',                       include('apps.finance.urls')),
 ]

@@ -135,6 +135,10 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
             if c.id not in values[col]:
                 values[col][c.id] = bases.get(c.percent_base, 0) * float(c.percent or 0) / 100
 
+    # Goods actually invoiced by suppliers, where they have invoiced (difference vs order totals).
+    goods_diff = goods_invoice_difference(deal)
+    goods_actual = goods + goods_diff
+
     rows, by_cat, overruns = [], {}, []
     charges = 0.0
     invoiced = 0
@@ -176,9 +180,9 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
     extra_act = sum(values['act'].values())
     revenue = sell + charges
 
-    def col(extra):
-        profit = revenue - goods - extra
-        return {'revenue': round(revenue, 2), 'extra_costs': round(extra, 2),
+    def col(extra, goods_used):
+        profit = revenue - goods_used - extra
+        return {'revenue': round(revenue, 2), 'extra_costs': round(extra, 2), 'goods': round(goods_used, 2),
                 'net_profit': round(profit, 2),
                 'net_margin_pct': round(profit / revenue * 100, 1) if revenue > 0 else None}
 
@@ -206,8 +210,9 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
         'gross_profit': round(sell - goods, 2),
         'gross_margin_pct': round((sell - goods) / sell * 100, 1) if sell > 0 else None,
         'cif_value': {'estimate': round(cif['est'], 2), 'actual_so_far': round(cif['act'], 2)},
-        'estimate': col(extra_est),
-        'actual_so_far': col(extra_act),
+        'estimate': col(extra_est, goods),
+        'actual_so_far': col(extra_act, goods_actual),
+        'goods_invoice_difference': round(goods_diff, 2),
         'costs_total': len(costs),
         'costs_invoiced': invoiced,
         'by_category': sorted(
@@ -299,3 +304,20 @@ def detach_shipment(shipment):
     """Before a shipment is deleted: drop its freight from the costs."""
     shipment.freight_cost = None
     sync_shipment_cost(shipment)
+
+
+def goods_invoice_difference(deal):
+    """
+    How much supplier invoices for goods differ from their order totals, summed
+    over orders that have been invoiced (same currency as the deal only).
+    Positive = suppliers billed more than ordered.
+    """
+    from apps.logistics.models import SupplierOrder
+    diff = 0.0
+    orders = (SupplierOrder.objects.filter(deal=deal).exclude(status='cancelled')
+              .prefetch_related('items', 'payables'))
+    for o in orders:
+        bills = [p for p in o.payables.all() if p.kind == 'goods' and p.currency == deal.currency]
+        if bills and o.currency == deal.currency:
+            diff += sum(float(p.amount) for p in bills) - o.total
+    return diff

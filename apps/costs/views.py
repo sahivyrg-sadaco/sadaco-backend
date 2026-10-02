@@ -151,3 +151,40 @@ def freight_estimate(request, pk):
                  + '; '.join(f'{c.get_category_display()} {c.currency} {c.estimate_amount:,.2f}' for c in written) + '.')
         return Response({'estimate': freight.item_logistics(deal), **_payload(deal)})
     return Response({'estimate': freight.item_logistics(deal)})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def landed_cost(request, pk):
+    """GET /api/deals/{id}/landed/?target=50 → per-line landed cost and the price at the target margin."""
+    from .landed import landed
+    deal = get_object_or_404(Deal, pk=pk)
+    target = request.query_params.get('target')
+    try:
+        target = float(target) if target not in (None, '') else None
+    except ValueError:
+        return Response({'error': 'Enter a percentage.'}, status=status.HTTP_400_BAD_REQUEST)
+    if target is not None and not (0 <= target < 100):
+        return Response({'error': 'Use a margin from 0 to 99%.'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(landed(deal, target))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def landed_apply(request, pk):
+    """POST /api/deals/{id}/landed/apply/ { target_margin_pct, items: [ids] } → reprices those lines."""
+    from .landed import apply, landed
+    deal = get_object_or_404(Deal, pk=pk)
+    if getattr(request.user, 'role', None) not in ('admin', 'sales'):
+        return Response({'error': 'Only admin and sales users can change prices.'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        target = float(request.data.get('target_margin_pct'))
+    except (TypeError, ValueError):
+        return Response({'error': 'Enter the target margin.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not (0 <= target < 100):
+        return Response({'error': 'Use a margin from 0 to 99%.'}, status=status.HTTP_400_BAD_REQUEST)
+    changed = apply(deal, target, request.data.get('items') or [], request.user)
+    if changed:
+        _log(deal, request.user, f'Prices recalculated at {target:g}% margin on landed cost for '
+             + ', '.join(f"line {r['n']}" for r in changed) + '.')
+    return Response({'changed': len(changed), **landed(deal, target)})
