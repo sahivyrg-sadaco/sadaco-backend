@@ -77,6 +77,9 @@ class ClientPO(models.Model):
     amount        = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     currency      = models.CharField(max_length=10, default='USD')
     attachment_id = models.IntegerField(null=True, blank=True)   # documents.FileAttachment, when uploaded
+    # The quoted lines this PO covers (what the client actually ordered):
+    # [{deal_item, n, description, qty, unit, unit_price, total}]
+    lines         = models.JSONField(default=list, blank=True)
     status        = models.CharField(max_length=20, choices=STATUS_CHOICES, default='received')
     checks        = models.JSONField(default=dict)               # what was confirmed when processing
     notes         = models.TextField(blank=True)

@@ -117,8 +117,13 @@ class DealListSerializer(serializers.ModelSerializer):
             settings_obj = obj.cost_settings
         except Exception:  # no settings row → incoterm default
             settings_obj = False
-        e = compute(obj, costs=list(obj.extra_costs.all()),
-                    goods=float(obj.sum_cost or 0), sell=float(obj.sum_price or 0), settings_obj=settings_obj)
+        from apps.clientquotes.models import ClientPO
+        if ClientPO.objects.filter(deal=obj, status='processed').exists():
+            # Partly won deals: work from the lines the client ordered.
+            e = compute(obj, costs=list(obj.extra_costs.all()), settings_obj=settings_obj)
+        else:
+            e = compute(obj, costs=list(obj.extra_costs.all()),
+                        goods=float(obj.sum_cost or 0), sell=float(obj.sum_price or 0), settings_obj=settings_obj)
         return {
             'net_margin_est': e['estimate']['net_margin_pct'],
             'net_margin_act': e['actual_so_far']['net_margin_pct'],

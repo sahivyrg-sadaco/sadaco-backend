@@ -52,6 +52,24 @@ def pending_awards(deal):
             'qty': it.qty, 'unit_cost': it.unit_cost, 'item': it, 'quote': it.awarded_quote,
         }
 
+    # Only what the client ordered: cap each line at the quantity won, taking it
+    # from the largest award first. None = no client PO processed yet (all quoted).
+    from apps.clientquotes.services import won_items
+    won = won_items(deal)
+    if won is not None:
+        capped = {}
+        by_item = defaultdict(list)
+        for key, a in awarded.items():
+            by_item[key[0]].append((key, a))
+        for item_id, entries in by_item.items():
+            left = Decimal(str(won.get(item_id, 0)))
+            for key, a in sorted(entries, key=lambda e: -e[1]['qty']):
+                take = min(Decimal(str(a['qty'])), left)
+                left -= take
+                if take > 0:
+                    capped[key] = {**a, 'qty': take}
+        awarded = capped
+
     ordered = defaultdict(Decimal)
     for line in (SupplierOrderItem.objects
                  .filter(order__deal=deal, deal_item__isnull=False)

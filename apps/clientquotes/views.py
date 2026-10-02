@@ -39,7 +39,7 @@ def _quote_json(q, snap):
         'status_label': q.get_status_display(), 'language': q.language,
         'issue_date': q.issue_date.isoformat(), 'valid_until': q.valid_until.isoformat(),
         'expired': q.status == 'sent' and q.valid_until < timezone.localdate(),
-        'currency': q.currency, 'lines': q.lines, 'charges': q.charges, 'total': float(q.total),
+        'currency': q.currency, 'lines': services.quote_lines(q), 'charges': q.charges, 'total': float(q.total),
         'payment_terms': q.payment_terms, 'incoterm': q.incoterm, 'delivery_point': q.delivery_point,
         'delivery_time': q.delivery_time, 'client_ref': q.client_ref, 'notes': q.notes,
         'sent_date': q.sent_date.isoformat() if q.sent_date else None, 'sent_to': q.sent_to,
@@ -57,6 +57,7 @@ def _po_json(p):
         'po_number': p.po_number, 'po_date': p.po_date.isoformat(), 'received_date': p.received_date.isoformat(),
         'amount': float(p.amount) if p.amount is not None else None, 'currency': p.currency,
         'attachment_id': p.attachment_id, 'status': p.status, 'status_label': p.get_status_display(),
+        'lines': p.lines, 'lines_total': len(p.quote.lines) if p.quote else None,
         'checks': p.checks, 'notes': p.notes, 'reject_reason': p.reject_reason,
         'processed_by': p.processed_by.name if p.processed_by else None,
         'processed_at': p.processed_at.isoformat() if p.processed_at else None,
@@ -71,6 +72,7 @@ def _payload(deal):
         'pos': [_po_json(p) for p in ClientPO.objects.filter(deal=deal).select_related('quote', 'processed_by')],
         'current': snap,
         'po_status': services.po_status(deal),
+        'won_items': services.won_items(deal),
         'defaults': {
             'language': services.default_language(deal), 'valid_days': services.DEFAULT_VALID_DAYS,
             'client_email': client.contact_email if client else '', 'client_contact': client.contact_name if client else '',
@@ -213,16 +215,42 @@ def record_po(request, pk):
         amount = Decimal(str(d['amount'])).quantize(Decimal('0.01')) if d.get('amount') not in (None, '') else None
     except (ValueError, InvalidOperation):
         return _bad('Check the date and amount.')
+    # Which quoted lines the PO covers. Not given → every line of the quote.
+    source = services.quote_lines(quote) if quote else services.current_snapshot(deal)['lines']
+    by_item = {l['deal_item']: l for l in source if l.get('deal_item')}
+    picked = d.get('lines')
+    lines = []
+    if picked is None:
+        lines = [dict(l) for l in by_item.values()]
+    else:
+        for row in picked:
+            try:
+                item_id, qty = int(row.get('deal_item')), float(row.get('qty'))
+            except (TypeError, ValueError):
+                return _bad('Each line needs an item and a quantity.', 'lines')
+            base = by_item.get(item_id)
+            if not base:
+                return _bad('A line on the PO is not on the quote.', 'lines')
+            if qty <= 0:
+                return _bad(f"Line {base['n']}: enter a quantity above zero.", 'lines')
+            lines.append({**base, 'qty': qty, 'total': round(qty * float(base['unit_price']), 2)})
+    if not lines:
+        return _bad('Tick at least one line the client ordered.', 'lines')
+    if amount is None:
+        amount = Decimal(str(round(sum(l['total'] for l in lines), 2)))
     with transaction.atomic():
         p = ClientPO.objects.create(
             deal=deal, quote=quote, po_number=number, po_date=po_date, received_date=timezone.localdate(),
-            amount=amount, currency=deal.currency, attachment_id=d.get('attachment_id') or None,
+            amount=amount, currency=deal.currency, attachment_id=d.get('attachment_id') or None, lines=lines,
             notes=str(d.get('notes') or ''), created_by=request.user)
         if quote and quote.status in ('sent', 'superseded', 'declined'):
             quote.status = 'accepted'
             quote.save(update_fields=['status', 'updated_at'])
+    total_lines = len(by_item)
     services.log(deal, request.user, f"Client PO {p.po_number} received"
-                 + (f' for quote {quote.number}' if quote else '') + '. It needs processing before supplier orders.')
+                 + (f' for quote {quote.number}' if quote else '')
+                 + (f': {len(lines)} of {total_lines} lines' if len(lines) < total_lines else ': all lines')
+                 + '. It needs processing before supplier orders.')
     return Response(_payload(deal), status=status.HTTP_201_CREATED)
 
 
@@ -260,7 +288,17 @@ def process_po(request, pid):
     diff = ''
     if p.quote and p.amount is not None and abs(float(p.amount) - float(p.quote.total)) > 0.005:
         diff = f' Amount differs from the quote by {p.currency} {float(p.amount) - float(p.quote.total):,.2f} (accepted).'
-    services.log(deal, request.user, f'Client PO {p.po_number} processed. Supplier orders can now be placed.{diff}')
+    won = {l['deal_item'] for l in p.lines}
+    quoted = services.quote_lines(p.quote) if p.quote else []
+    lost = [l for l in quoted if l.get('deal_item') and l['deal_item'] not in won]
+    reduced = [l for l in p.lines
+               if any(q.get('deal_item') == l['deal_item'] and float(q['qty']) > float(l['qty']) for q in quoted)]
+    detail = f' Won: {len(p.lines)} line(s).'
+    if lost:
+        detail += ' Not won: ' + ', '.join(f"{l['n']}. {str(l['description'])[:40]}" for l in lost) + '.'
+    if reduced:
+        detail += ' Smaller quantity: ' + ', '.join(f"line {l['n']} ({l['qty']:g})" for l in reduced) + '.'
+    services.log(deal, request.user, f'Client PO {p.po_number} processed.{detail}{diff}')
     services.advance_stage(deal, "Client's PO Received", request.user)
     return Response(_payload(deal))
 

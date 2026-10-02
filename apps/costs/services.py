@@ -77,6 +77,16 @@ def to_deal_currency(amount, cost, deal):
 
 
 def item_sums(deal):
+    """(goods cost, sell value): of the lines the client ordered once a PO is processed, else of all lines."""
+    from apps.clientquotes.services import won_items
+    won = won_items(deal)
+    if won is not None:
+        goods = sell = 0.0
+        for it in deal.items.filter(is_split_child=False):
+            q = won.get(it.id, 0)
+            goods += q * float(it.unit_cost or 0)
+            sell += q * float(it.unit_price or 0)
+        return goods, sell
     agg = deal.items.filter(is_split_child=False).aggregate(
         goods=Sum(F('qty') * F('unit_cost')), sell=Sum(F('qty') * F('unit_price')))
     return float(agg['goods'] or 0), float(agg['sell'] or 0)

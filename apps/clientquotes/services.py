@@ -48,7 +48,7 @@ def current_snapshot(deal):
             problems.append(f'Line {k} ({it.description[:40]}) has no sell price.')
         if qty <= 0:
             problems.append(f'Line {k} ({it.description[:40]}) has no quantity.')
-        lines.append({'n': k, 'description': it.description, 'part_number': it.part_number, 'brand': it.brand,
+        lines.append({'deal_item': it.id, 'n': k, 'description': it.description, 'part_number': it.part_number, 'brand': it.brand,
                       'model': getattr(it, 'model_name', '') or '', 'qty': qty, 'unit': it.unit,
                       'unit_price': round(price, 4), 'total': round(qty * price, 2)})
     if not items:
@@ -85,6 +85,40 @@ def changed_since(quote, snap):
     q = {'lines': quote.lines, 'charges': quote.charges, 'payment_terms': quote.payment_terms,
          'incoterm': quote.incoterm, 'delivery_point': quote.delivery_point}
     return _signature(q) != _signature(snap)
+
+
+def quote_lines(quote):
+    """
+    The quote's lines, each with its deal_item id. Quotes saved before lines
+    carried the id are matched to the deal's items by line number.
+    """
+    lines = [dict(l) for l in quote.lines]
+    if any(not l.get('deal_item') for l in lines):
+        items = list(quote.deal.items.filter(is_split_child=False).order_by('item_number', 'id'))
+        for l in lines:
+            if not l.get('deal_item') and 1 <= int(l.get('n') or 0) <= len(items):
+                l['deal_item'] = items[int(l['n']) - 1].id
+    return lines
+
+
+def won_items(deal):
+    """
+    {deal_item_id: quantity won} from the client's processed POs, or None when
+    no PO has been processed yet (everything still counts as quoted).
+    A processed PO without line detail (recorded before lines existed) wins every line in full.
+    """
+    pos = list(ClientPO.objects.filter(deal=deal, status='processed'))
+    if not pos:
+        return None
+    won = {}
+    for p in pos:
+        if not p.lines:
+            for it in deal.items.filter(is_split_child=False):
+                won[it.id] = won.get(it.id, 0) + float(it.qty)
+            continue
+        for l in p.lines:
+            won[l['deal_item']] = won.get(l['deal_item'], 0) + float(l['qty'])
+    return won
 
 
 def po_status(deal):
