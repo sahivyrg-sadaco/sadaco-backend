@@ -132,7 +132,7 @@ def upsert_quote_item(quote_id: int, deal_item_id: int, unit_price, **extra) -> 
     INSERT-OR-UPDATE a supplier quote line. Returns the row id.
     `extra` may hold lead_time_days and/or unit_weight_kg; keys not given are left as they are.
     """
-    from apps.quotes.models import SupplierQuoteItem
+    from apps.quotes.models import SupplierQuote, SupplierQuoteItem
 
     item = DealItem.objects.filter(pk=deal_item_id).first()
     qty  = Decimal(item.qty) if item else Decimal('1')
@@ -152,6 +152,13 @@ def upsert_quote_item(quote_id: int, deal_item_id: int, unit_price, **extra) -> 
     qi, _ = SupplierQuoteItem.objects.update_or_create(
         quote_id=quote_id, deal_item_id=deal_item_id, defaults=defaults,
     )
+    # The quick lead time on the quote applies to every item it covers,
+    # unless that item has been given its own.
+    if qi.lead_time_days is None and 'lead_time_days' not in extra:
+        quote_lead = SupplierQuote.objects.filter(pk=quote_id).values_list('lead_time_days', flat=True).first()
+        if quote_lead is not None:
+            qi.lead_time_days = quote_lead
+            qi.save(update_fields=['lead_time_days'])
     return qi.id
 
 
