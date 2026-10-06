@@ -171,6 +171,12 @@ class DealQuoteAddItemView(APIView):
                 except (ValueError, ArithmeticError):
                     transaction.set_rollback(True)
                     return Response({'error': 'Check the price, lead time and weight.'}, status=400)
+        # Offered by a supplier = asked of them: add it to their latest RFQ on this deal, if any.
+        if quote and quote.supplier_id:
+            from apps.rfqs.models import SupplierRFQ
+            rfq = SupplierRFQ.objects.filter(deal=deal, supplier_id=quote.supplier_id).order_by('-sent_date', '-id').first()
+            if rfq:
+                rfq.deal_items.add(item)
         who = quote.supplier.company_name if quote and quote.supplier else None
         DealActivity.objects.create(
             deal=deal, user=request.user, activity_type='item',
