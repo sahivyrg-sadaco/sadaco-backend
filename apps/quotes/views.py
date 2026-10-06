@@ -88,8 +88,22 @@ class DealQuoteItemListCreateView(APIView):
 
     def post(self, request, pk, qid):
         """Upsert a quote item — body: {deal_item_id, unit_price, lead_time_days?, unit_weight_kg?}."""
-        if not SupplierQuote.objects.filter(deal_id=pk, pk=qid).exists():
+        quote = SupplierQuote.objects.filter(deal_id=pk, pk=qid).select_related('supplier').first()
+        if not quote:
             return Response({'error': 'Not found'}, status=404)
+        # A supplier sent an RFQ on this deal quotes only the items they were asked about
+        # (prices already on record before this rule stay editable).
+        from apps.rfqs.models import SupplierRFQ
+        from apps.quotes.models import SupplierQuoteItem
+        rfqs = SupplierRFQ.objects.filter(deal_id=pk, supplier_id=quote.supplier_id) if quote.supplier_id else None
+        if rfqs is not None and rfqs.exists():
+            item_id = request.data.get('deal_item_id')
+            asked = set(rfqs.values_list('deal_items', flat=True))
+            already = SupplierQuoteItem.objects.filter(quote_id=qid, deal_item_id=item_id).exists()
+            if item_id is not None and int(item_id) not in asked and not already:
+                name = quote.supplier.company_name if quote.supplier else 'this supplier'
+                return Response({'error': f"That item wasn't in the RFQ sent to {name}, so it can't be priced on their quote."},
+                                status=400)
         try:
             extra = {k: request.data[k] for k in ('lead_time_days', 'unit_weight_kg') if k in request.data}
             row_id = upsert_quote_item(
