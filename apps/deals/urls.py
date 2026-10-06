@@ -8,6 +8,7 @@ from apps.quotes.views import (
     DealQuoteSelectView,
     DealQuoteApplyView,
     DealQuoteItemListCreateView,
+    DealQuoteAddItemView,
 )
 from apps.documents.views import (
     DealAttachmentListCreateView,
@@ -44,6 +45,7 @@ urlpatterns = [
     path('<int:pk>/quotes/<int:qid>/select/', DealQuoteSelectView.as_view()),
     path('<int:pk>/quotes/<int:qid>/apply/',  DealQuoteApplyView.as_view()),
     path('<int:pk>/quotes/<int:qid>/items/',  DealQuoteItemListCreateView.as_view()),
+    path('<int:pk>/quote-items/add/',         DealQuoteAddItemView.as_view()),
 
     # Attachments + generation
     path('<int:pk>/attachments/',          DealAttachmentListCreateView.as_view()),

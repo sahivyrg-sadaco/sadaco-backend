@@ -119,3 +119,61 @@ class DealQuoteItemListCreateView(APIView):
         qi = SupplierQuoteItem.objects.filter(pk=row_id).first()
         return Response(SupplierQuoteItemSerializer(qi).data,
                         status=status.HTTP_201_CREATED)
+
+
+class DealQuoteAddItemView(APIView):
+    """
+    POST /api/deals/{id}/quote-items/add/
+    { description, part_number?, brand?, model_name?, qty, unit?,
+      quote?: supplier quote id, unit_price?, lead_time_days?, unit_weight_kg? }
+
+    Adds a line item to the deal from the Supplier quotes tab. When `quote` is
+    given, the item counts as offered by that supplier (e.g. an accessory they
+    recommend): it's placed on their quote, with their price if given, so it
+    can be priced even if their RFQ didn't include it.
+    """
+    permission_classes = [IsSalesOrOperationsOrAdmin]
+
+    def post(self, request, pk):
+        from decimal import Decimal, InvalidOperation
+        from django.db import transaction
+        from django.db.models import Max
+        from apps.costs.services import target_margin
+        from apps.deals.models import DealActivity, DealItem
+        deal = get_object_or_404(Deal, pk=pk)
+        d = request.data
+        description = str(d.get('description') or '').strip()
+        if not description:
+            return Response({'description': ['Describe the item.']}, status=400)
+        try:
+            qty = Decimal(str(d.get('qty')))
+            if qty <= 0:
+                raise InvalidOperation
+        except (InvalidOperation, ValueError, TypeError):
+            return Response({'qty': ['Enter a quantity above zero.']}, status=400)
+        quote = None
+        if d.get('quote'):
+            quote = SupplierQuote.objects.filter(pk=d['quote'], deal=deal).select_related('supplier').first()
+            if not quote:
+                return Response({'quote': ['That supplier quote is not on this deal.']}, status=400)
+        with transaction.atomic():
+            n = (DealItem.objects.filter(deal=deal, is_split_child=False).aggregate(m=Max('item_number'))['m'] or 0) + 1
+            item = DealItem.objects.create(
+                deal=deal, item_number=n, description=description,
+                part_number=str(d.get('part_number') or '').strip(), brand=str(d.get('brand') or '').strip(),
+                model_name=str(d.get('model_name') or '').strip(), qty=qty, unit=str(d.get('unit') or 'Unit (Unid)'),
+                margin_pct=Decimal(str(target_margin(deal)[0] / 100)).quantize(Decimal('0.0001')),
+            )
+            if quote:
+                extra = {k: d[k] for k in ('lead_time_days', 'unit_weight_kg') if d.get(k) not in (None, '')}
+                try:
+                    upsert_quote_item(quote_id=quote.id, deal_item_id=item.id, unit_price=d.get('unit_price') or 0, **extra)
+                except (ValueError, ArithmeticError):
+                    transaction.set_rollback(True)
+                    return Response({'error': 'Check the price, lead time and weight.'}, status=400)
+        who = quote.supplier.company_name if quote and quote.supplier else None
+        DealActivity.objects.create(
+            deal=deal, user=request.user, activity_type='item',
+            description=f'Line {n} added from the Supplier quotes tab: {description[:60]}'
+                        + (f' (offered by {who})' if who else '') + '.')
+        return Response({'id': item.id, 'item_number': n}, status=status.HTTP_201_CREATED)
