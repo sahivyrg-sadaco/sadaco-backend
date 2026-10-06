@@ -103,7 +103,7 @@ def item_logistics(deal):
     return {'lines': lines, 'legs': legs, 'max_lead_time_days': max_lead, 'currency': deal.currency}
 
 
-def save_estimate(deal, lines_in, legs_in, user):
+def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
     """
     lines_in: [{deal_item, unit_kg}]   legs_in: [{category, rate_per_kg, min_charge}]
     Returns the cost rows written. A leg with no rate is left untouched.
@@ -168,7 +168,11 @@ def save_estimate(deal, lines_in, legs_in, user):
         c.weight_rate = Decimal(str(rate))
         c.weight_minimum = Decimal(str(minimum)) if minimum else None
         minimum_note = f' (minimum {deal.currency} {minimum:,.2f} applied)' if minimum and minimum > raw else ''
-        c.description = f'By weight: {total_kg:,.1f} kg × {deal.currency} {rate:,.2f}/kg{minimum_note}'
+        if display_unit == 'lb':   # described the way it was entered; stored in kg either way
+            c.description = (f'By weight: {total_kg / 0.45359237:,.1f} lb × {deal.currency} '
+                             f'{rate * 0.45359237:,.2f}/lb{minimum_note}')
+        else:
+            c.description = f'By weight: {total_kg:,.1f} kg × {deal.currency} {rate:,.2f}/kg{minimum_note}'
         c.save()
         written.append(c)
     return written

@@ -169,11 +169,16 @@ LOCATIONS = [
     'Miami, Florida', 'La Guaira, Venezuela',
     'Puerto Cabello, Venezuela', 'Puerto Ordaz, Venezuela', 'Su almacen',
 ]
+# Units: counts, then British Imperial (the default system), then metric.
+# More can be added in the app ("Add unit…"); lines saved with other units keep them.
 UNITS = [
-    'Kg', 'MT (TM)', 'lbs', 'in', 'ft', 'mm', 'm',
-    'liters (litros)', 'gal',
-    'Box of 25 (Caja de 25)', 'Box of 50 (Caja de 50)',
-    'Box of 100 (Caja de 100)', 'Unit (Unid)',
+    'Unit (Unid)', 'Box of 25 (Caja de 25)', 'Box of 50 (Caja de 50)', 'Box of 100 (Caja de 100)',
+    # British Imperial
+    'lb (libra)', 'oz (onza)', 'long ton (tonelada larga)',
+    'in (pulgada)', 'ft (pie)', 'yd (yarda)', 'sq ft (pie²)', 'cu ft (pie³)',
+    'imp gal (galón imperial)', 'imp qt (cuarto imperial)', 'imp pt (pinta imperial)',
+    # Metric
+    'g (gramo)', 'Kg', 'MT (TM)', 'mm', 'cm', 'm', 'm²', 'm³', 'liters (litros)',
 ]
 SELLER_ENTITIES = {
     'SADACO INTERNATIONAL LLC': {

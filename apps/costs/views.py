@@ -143,7 +143,7 @@ def freight_estimate(request, pk):
     if request.method == 'POST':
         try:
             written = freight.save_estimate(deal, request.data.get('lines') or [], request.data.get('legs') or [],
-                                            request.user)
+                                            request.user, display_unit=request.data.get('weight_unit') or 'kg')
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         if written:
