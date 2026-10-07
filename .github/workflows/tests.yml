@@ -1,0 +1,48 @@
+# Runs on every push and pull request:
+#   1. checks every database change in the code has its migration file
+#      (catches a missing or stale file from a partial copy)
+#   2. runs the test suite (apps/core/tests) against a real PostgreSQL
+# Render can be set to deploy only after this passes (see docs/TESTS.md).
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sadaco
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/sadaco
+      SECRET_KEY: ci-only-secret-key-not-used-anywhere-else-0123456789
+      DEBUG: 'False'
+      ALLOWED_HOSTS: testserver,localhost
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'      # the same as Render
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Every model change has a migration
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run the tests
+        run: python manage.py test apps.core.tests --noinput -v 2

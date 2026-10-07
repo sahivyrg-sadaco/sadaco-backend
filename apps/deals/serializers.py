@@ -117,8 +117,7 @@ class DealListSerializer(serializers.ModelSerializer):
             settings_obj = obj.cost_settings
         except Exception:  # no settings row → incoterm default
             settings_obj = False
-        from apps.clientquotes.models import ClientPO
-        if ClientPO.objects.filter(deal=obj, status='processed').exists():
+        if any(p.status == 'processed' for p in obj.client_pos.all()):
             # Partly won deals: work from the lines the client ordered.
             e = compute(obj, costs=list(obj.extra_costs.all()), settings_obj=settings_obj)
         else:

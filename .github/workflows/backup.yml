@@ -58,7 +58,7 @@ jobs:
           ls -lh sadaco-*.dump
 
       - name: Keep the dump for 30 days
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sadaco-db-${{ github.run_number }}
           path: sadaco-*.dump

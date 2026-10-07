@@ -107,13 +107,14 @@ def won_items(deal):
     no PO has been processed yet (everything still counts as quoted).
     A processed PO without line detail (recorded before lines existed) wins every line in full.
     """
-    pos = list(ClientPO.objects.filter(deal=deal, status='processed'))
+    # .all() reuses prefetched rows (e.g. on the deals list) instead of querying per deal.
+    pos = [p for p in deal.client_pos.all() if p.status == 'processed']
     if not pos:
         return None
     won = {}
     for p in pos:
         if not p.lines:
-            for it in deal.items.filter(is_split_child=False):
+            for it in (i for i in deal.items.all() if not i.is_split_child):
                 won[it.id] = won.get(it.id, 0) + float(it.qty)
             continue
         for l in p.lines:
@@ -137,9 +138,10 @@ def po_status(deal):
 def board_entries(deals_qs, today):
     out = []
     by_id = {d.id: d for d in deals_qs.select_related('client')}
+    with_po = set(ClientPO.objects.filter(deal__in=deals_qs).exclude(status='rejected').values_list('deal_id', flat=True))
     for q in ClientQuote.objects.filter(deal__in=deals_qs, status='sent'):
         d = by_id[q.deal_id]
-        if ClientPO.objects.filter(deal=d).exclude(status='rejected').exists():
+        if d.id in with_po:
             continue
         flags = []
         if q.valid_until < today:

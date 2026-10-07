@@ -82,7 +82,7 @@ def item_sums(deal):
     won = won_items(deal)
     if won is not None:
         goods = sell = 0.0
-        for it in deal.items.filter(is_split_child=False):
+        for it in (i for i in deal.items.all() if not i.is_split_child):
             q = won.get(it.id, 0)
             goods += q * float(it.unit_cost or 0)
             sell += q * float(it.unit_price or 0)
@@ -312,10 +312,9 @@ def goods_invoice_difference(deal):
     over orders that have been invoiced (same currency as the deal only).
     Positive = suppliers billed more than ordered.
     """
-    from apps.logistics.models import SupplierOrder
     diff = 0.0
-    orders = (SupplierOrder.objects.filter(deal=deal).exclude(status='cancelled')
-              .prefetch_related('items', 'payables'))
+    # .all() reuses prefetched orders/items/payables when the caller loaded them (the deals list does).
+    orders = [o for o in deal.supplier_orders.all() if o.status != 'cancelled']
     for o in orders:
         bills = [p for p in o.payables.all() if p.kind == 'goods' and p.currency == deal.currency]
         if bills and o.currency == deal.currency:

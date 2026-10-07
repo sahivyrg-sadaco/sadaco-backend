@@ -23,8 +23,9 @@ class _WriteRoles:
 
 
 def _orders_qs():
-    return (SupplierOrder.objects.select_related('supplier')
-            .prefetch_related('items', 'shipments'))
+    return (SupplierOrder.objects
+            .select_related('supplier', 'payment_plan', 'supplier__payment_plan')
+            .prefetch_related('items', 'shipments', 'payables__payments'))
 
 
 def _ships_qs():
@@ -203,3 +204,11 @@ def tracking_attention(request):
     board = services.build_board(request.user)
     board['entries'] = [e for e in board['entries'] if e['flags']]
     return Response(board)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def deal_reminders(request, pk):
+    """GET /api/deals/{id}/reminders/ → this deal's tracking-board entries only."""
+    get_object_or_404(Deal, pk=pk)
+    return Response(services.build_board(request.user, deal_ids=[pk]))

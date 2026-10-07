@@ -144,7 +144,10 @@ def payable_rows(payables, today=None):
 
 
 def _payables_qs():
-    return Payable.objects.select_related('supplier', 'supplier_order', 'deal_cost').prefetch_related('payments')
+    return (Payable.objects
+            .select_related('supplier', 'supplier_order', 'deal_cost', 'supplier_order__supplier',
+                            'supplier_order__payment_plan', 'supplier_order__supplier__payment_plan')
+            .prefetch_related('payments'))
 
 
 # ── Suggestions for the next client invoice ─────────────────────────────────
@@ -355,7 +358,8 @@ def board_entries(deals_qs, today):
     # Deals waiting on the client's advance before supplier orders can go out.
     # (Orders waiting on a supplier invoice are flagged on their own board row.)
     from .gates import client_money
-    for d in deals_qs.filter(deal_status='active', supplier_orders__status='draft').distinct().select_related('client'):
+    for d in (deals_qs.filter(deal_status='active', supplier_orders__status='draft').distinct()
+              .select_related('client', 'payment_plan', 'client__payment_plan')):
         c = client_money(d)
         if c['advance_met']:
             continue
@@ -371,11 +375,12 @@ def board_entries(deals_qs, today):
 
     # Goods received from every supplier, but the client hasn't been invoiced.
     from apps.logistics.models import SupplierOrder
-    for d in deals_qs.filter(deal_status='active').select_related('client'):
-        orders = [o for o in SupplierOrder.objects.filter(deal=d).exclude(status='cancelled')]
+    for d in (deals_qs.filter(deal_status='active').select_related('client')
+              .prefetch_related('supplier_orders', 'client_invoices')):
+        orders = [o for o in d.supplier_orders.all() if o.status != 'cancelled']
         if not orders or any(o.status != 'received' for o in orders):
             continue
-        if ClientInvoice.objects.filter(deal=d, cancelled=False).exists():
+        if any(not i.cancelled for i in d.client_invoices.all()):
             continue
         out.append({
             'kind': 'deal', 'id': d.id, 'deal_id': d.id, 'deal_reference': d.reference,

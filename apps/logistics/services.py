@@ -363,14 +363,18 @@ def _cost_entries(deals_qs):
     return out
 
 
-def build_board(user):
+def build_board(user, deal_ids=None):
+    """The tracking board; with deal_ids, only those deals (a deal page's own reminders)."""
     today = timezone.localdate()
     deals = Deal.objects.all()
     if getattr(user, 'role', None) == 'sales':
         deals = deals.filter(owner=user)
+    if deal_ids is not None:
+        deals = deals.filter(pk__in=deal_ids)
 
     orders = (SupplierOrder.objects.filter(deal__in=deals, status__in=SupplierOrder.OPEN_STATUSES)
-              .select_related('deal', 'deal__client', 'supplier').prefetch_related('shipments', 'items'))
+              .select_related('deal', 'deal__client', 'supplier', 'payment_plan', 'supplier__payment_plan')
+              .prefetch_related('shipments', 'items', 'payables__payments'))
     ships = (Shipment.objects.filter(deal__in=deals, status__in=Shipment.OPEN_STATUSES)
              .select_related('deal', 'deal__client').prefetch_related('orders', 'orders__supplier'))
 

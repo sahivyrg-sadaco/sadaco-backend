@@ -37,7 +37,8 @@ def _m(currency, v):
 def order_money(order):
     """Where a supplier order stands against its payment terms."""
     steps, source = plans.for_order(order)
-    payables = list(order.payables.filter(kind='goods').prefetch_related('payments'))
+    # .all() uses rows already loaded by prefetch_related('payables__payments') when present.
+    payables = [p for p in order.payables.all() if p.kind == 'goods']
     total = sum(float(p.amount) for p in payables)
     paid = sum(float(x.amount) for p in payables for x in p.payments.all())
     pre = plans.pre_shipping_pct(steps)

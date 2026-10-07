@@ -71,8 +71,8 @@ def _money_payload(deal, user=None):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def deal_money(request, pk):
-    """GET /api/deals/{id}/money/"""
-    return Response(_money_payload(get_object_or_404(Deal, pk=pk)))
+    """GET /api/deals/{id}/money/ (reading only: stages are re-checked when something changes)"""
+    return Response(services.deal_money(get_object_or_404(Deal, pk=pk)))
 
 
 @api_view(['POST'])
