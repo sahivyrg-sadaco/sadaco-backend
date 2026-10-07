@@ -13,26 +13,46 @@ on:
 
 jobs:
   backup:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04     # pinned, so GitHub's runner upgrades don't change it
     timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
     steps:
-      - name: Install the PostgreSQL 17 client
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-common
-          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y -qq postgresql-client-17
-
-      - name: Dump the database
-        env:
-          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      - name: Check the secret is set
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "::error::The BACKUP_DATABASE_URL secret is not set. See docs/BACKUPS.md."
+            echo "::error::The BACKUP_DATABASE_URL secret is missing. Add it under Settings → Secrets and variables → Actions (see docs/BACKUPS.md)."
             exit 1
           fi
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "::error::BACKUP_DATABASE_URL doesn't look like a connection string. It should start with postgresql://"; exit 1 ;;
+          esac
+
+      - name: Find the database's PostgreSQL version
+        id: ver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client > /dev/null
+          if ! num=$(psql "$DATABASE_URL" -tAc 'SHOW server_version_num' 2>err.txt); then
+            echo "::error::Could not connect to the database: $(tr '\n' ' ' < err.txt). Check the password in BACKUP_DATABASE_URL matches Neon's."
+            exit 1
+          fi
+          major=$(( ${num// /} / 10000 ))
+          echo "Database runs PostgreSQL $major"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+
+      - name: Install matching backup tools
+        run: |
+          sudo apt-get install -y -qq postgresql-common > /dev/null
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y > /dev/null
+          sudo apt-get install -y -qq "postgresql-client-${{ steps.ver.outputs.major }}" > /dev/null
+          "/usr/lib/postgresql/${{ steps.ver.outputs.major }}/bin/pg_dump" --version
+
+      - name: Dump the database
+        run: |
           stamp=$(date -u +%Y-%m-%d)
-          /usr/lib/postgresql/17/bin/pg_dump "$DATABASE_URL" \
+          "/usr/lib/postgresql/${{ steps.ver.outputs.major }}/bin/pg_dump" "$DATABASE_URL" \
             --format=custom --no-owner --no-privileges \
             --file "sadaco-$stamp.dump"
           ls -lh sadaco-*.dump
