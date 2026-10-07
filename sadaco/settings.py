@@ -65,7 +65,11 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'apps.core.access.DealAccessMiddleware',   # sales users only open their own deals
 ]
+
+# Shown on /api/health/ and compared with the app's own label, so it's clear which update is live.
+APP_VERSION = '2026-10-07.1'
 
 ROOT_URLCONF = 'sadaco.urls'
 

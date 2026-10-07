@@ -16,8 +16,40 @@ from .serializers import (
 
 
 class EmailTokenObtainPairView(TokenObtainPairView):
-    """POST /api/auth/token/ — log in with email + password."""
+    """
+    POST /api/auth/token/ — log in with email + password.
+
+    Guessing is limited: after 5 wrong passwords for an account it's locked for
+    15 minutes, and any one network address gets 30 failed tries per 15 minutes.
+    A successful sign-in clears the account's count.
+    """
     serializer_class = EmailTokenObtainPairSerializer
+    MAX_PER_ACCOUNT = 5
+    MAX_PER_ADDRESS = 30
+    WINDOW = 15 * 60
+
+    def post(self, request, *args, **kwargs):
+        from django.core.cache import cache
+        email = str(request.data.get('email') or '').strip().lower()
+        forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+        ip = forwarded.split(',')[0].strip() if forwarded else request.META.get('REMOTE_ADDR', '')
+        k_acct, k_ip = f'login-fail:acct:{email}', f'login-fail:ip:{ip}'
+        if cache.get(k_acct, 0) >= self.MAX_PER_ACCOUNT or cache.get(k_ip, 0) >= self.MAX_PER_ADDRESS:
+            return Response({'detail': 'Too many failed sign-ins. Try again in 15 minutes.'}, status=429)
+
+        def failed():
+            for k in (k_acct, k_ip):
+                cache.set(k, cache.get(k, 0) + 1, self.WINDOW)
+        try:
+            response = super().post(request, *args, **kwargs)
+        except Exception:
+            failed()
+            raise
+        if response.status_code == 200:
+            cache.delete(k_acct)
+        else:
+            failed()
+        return response
 
 
 @api_view(['GET'])

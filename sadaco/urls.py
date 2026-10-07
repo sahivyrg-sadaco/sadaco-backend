@@ -12,7 +12,11 @@ def health(request):
         with connection.cursor() as c:
             c.execute('SELECT 1')
             c.fetchone()
-        return JsonResponse({'status': 'ok', 'db': 'connected'})
+        import os
+        from django.conf import settings
+        return JsonResponse({'status': 'ok', 'db': 'connected',
+                             'version': getattr(settings, 'APP_VERSION', 'unknown'),
+                             'commit': (os.environ.get('RENDER_GIT_COMMIT') or '')[:7]})
     except Exception as e:
         return JsonResponse({'status': 'error', 'db': str(e)}, status=503)
 

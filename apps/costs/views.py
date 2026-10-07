@@ -12,6 +12,24 @@ from .models import TREATMENTS, DealCost, DealCostSettings
 from .serializers import DealCostSerializer
 
 
+# Who can change what on costs:
+#   estimates, typical costs, freight estimate  → admin, sales, operations
+#   pricing settings (target margin, treatment) → admin, sales
+#   a cost's invoice (actual amount, number, date, reviewed) → also finance
+ESTIMATE_ROLES = ('admin', 'sales', 'operations')
+SETTINGS_ROLES = ('admin', 'sales')
+INVOICE_FIELDS = {'actual_amount', 'invoice_ref', 'invoice_date', 'overrun_acknowledged'}
+
+
+def _role(request):
+    return getattr(request.user, 'role', None)
+
+
+def _denied(roles):
+    names = ', '.join(r for r in roles if r != 'admin')
+    return Response({'error': f'Only admin and {names} users can do this.'}, status=status.HTTP_403_FORBIDDEN)
+
+
 def _log(deal, user, text):
     DealActivity.objects.create(deal=deal, user=user, activity_type='costs', description=text)
 
@@ -32,6 +50,8 @@ def deal_costs(request, pk):
     """GET /api/deals/{id}/costs/ → { costs, economics }.  POST adds one cost."""
     deal = get_object_or_404(Deal, pk=pk)
     if request.method == 'POST':
+        if _role(request) not in ESTIMATE_ROLES:
+            return _denied(ESTIMATE_ROLES)
         ser = DealCostSerializer(data=request.data, context={'deal': deal})
         ser.is_valid(raise_exception=True)
         c = ser.save(deal=deal, created_by=request.user)
@@ -46,6 +66,8 @@ def deal_costs(request, pk):
 def add_typical(request, pk):
     """POST /api/deals/{id}/costs/typical/ → adds the costs the incoterm usually involves."""
     deal = get_object_or_404(Deal, pk=pk)
+    if _role(request) not in ESTIMATE_ROLES:
+        return _denied(ESTIMATE_ROLES)
     if not deal.incoterm:
         return Response({'error': "Set the deal's incoterm first, so we know which costs to expect."},
                         status=status.HTTP_400_BAD_REQUEST)
@@ -67,6 +89,8 @@ def cost_settings(request, pk):
     """
     from decimal import Decimal, InvalidOperation
     deal = get_object_or_404(Deal, pk=pk)
+    if _role(request) not in SETTINGS_ROLES:
+        return _denied(SETTINGS_ROLES)
     s, _ = DealCostSettings.objects.get_or_create(deal=deal)
     d = request.data
     if 'default_treatment' in d:
@@ -101,6 +125,13 @@ def cost_detail(request, cid):
     """PUT/DELETE /api/costs/{id}/ → returns the deal's { costs, economics }."""
     c = get_object_or_404(DealCost.objects.select_related('deal'), pk=cid)
     deal = c.deal
+    role = _role(request)
+    if role not in ESTIMATE_ROLES:
+        # Finance records the invoice for a cost; nothing else.
+        if role != 'finance' or request.method == 'DELETE' or not set(request.data) <= INVOICE_FIELDS:
+            return Response({'error': 'Finance users can record a cost\'s invoice (amount, number, date), '
+                                      'but estimates are changed by admin, sales or operations.'},
+                            status=status.HTTP_403_FORBIDDEN)
     if request.method == 'DELETE':
         if c.shipment_id:
             return Response({'error': 'This cost comes from a shipment. Remove the freight cost on the shipment instead.'},
@@ -141,6 +172,8 @@ def freight_estimate(request, pk):
     from . import freight
     deal = get_object_or_404(Deal, pk=pk)
     if request.method == 'POST':
+        if _role(request) not in ESTIMATE_ROLES:
+            return _denied(ESTIMATE_ROLES)
         try:
             written = freight.save_estimate(deal, request.data.get('lines') or [], request.data.get('legs') or [],
                                             request.user, display_unit=request.data.get('weight_unit') or 'kg')

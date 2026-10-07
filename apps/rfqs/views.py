@@ -12,6 +12,14 @@ from .models import SupplierRFQ
 from .serializers import SupplierRFQSerializer
 
 
+RFQ_ROLES = ('admin', 'sales', 'operations')
+
+
+def _denied():
+    return Response({'error': 'Only admin, sales and operations users can send or change RFQs.'},
+                    status=status.HTTP_403_FORBIDDEN)
+
+
 def _qs():
     return SupplierRFQ.objects.select_related('supplier').prefetch_related('deal_items')
 
@@ -28,6 +36,8 @@ def deal_rfqs(request, pk):
     """GET /api/deals/{id}/rfqs/ → list.  POST logs one RFQ as sent → the new list."""
     deal = get_object_or_404(Deal, pk=pk)
     if request.method == 'POST':
+        if getattr(request.user, 'role', None) not in RFQ_ROLES:
+            return _denied()
         data = request.data.copy()
         data.setdefault('sent_date', timezone.localdate().isoformat())
         ser = SupplierRFQSerializer(data=data, context={'deal': deal})
@@ -47,6 +57,8 @@ def rfq_detail(request, rid):
     """PUT/DELETE /api/rfqs/{id}/ → the deal's RFQ list."""
     r = get_object_or_404(_qs().select_related('deal'), pk=rid)
     deal = r.deal
+    if getattr(request.user, 'role', None) not in RFQ_ROLES:
+        return _denied()
     if request.method == 'DELETE':
         r.delete()
         return Response(_list(deal))
@@ -68,6 +80,8 @@ def rfq_detail(request, rid):
 def rfq_followup(request, rid):
     """POST /api/rfqs/{id}/followup/ { reply_by? } → logs a reminder sent today."""
     r = get_object_or_404(SupplierRFQ.objects.select_related('deal', 'supplier'), pk=rid)
+    if getattr(request.user, 'role', None) not in RFQ_ROLES:
+        return _denied()
     r.followup_count += 1
     r.last_followup_date = timezone.localdate()
     if request.data.get('reply_by'):
