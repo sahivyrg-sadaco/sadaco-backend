@@ -198,3 +198,36 @@ def clear_lost_awards(deal):
             it.save(update_fields=['awarded_quote'])
         cleared.append(n)
     return cleared
+
+
+def reconcile(po):
+    """
+    The client's PO side by side with the quote it answers:
+      lines: each quoted line with quoted qty, PO qty and a status
+             ('match', 'reduced', 'increased' or 'not_ordered')
+      items_match: True when every quoted line is on the PO at the quoted quantity
+      ordered_value: the quoted prices of what's on the PO
+      amount_diff: PO amount − ordered_value (0 when not entered)
+    """
+    quoted = quote_lines(po.quote) if po.quote else []
+    on_po = {l['deal_item']: l for l in (po.lines or [])}
+    rows = []
+    for q in quoted:
+        p = on_po.get(q.get('deal_item'))
+        qq, pq = float(q['qty']), (float(p['qty']) if p else 0.0)
+        status = ('not_ordered' if not p else 'match' if abs(pq - qq) < 1e-9
+                  else 'reduced' if pq < qq else 'increased')
+        rows.append({'n': q['n'], 'deal_item': q.get('deal_item'), 'description': q['description'],
+                     'unit_price': float(q['unit_price']), 'quoted_qty': qq, 'po_qty': pq, 'status': status})
+    ordered_value = round(sum(float(l['qty']) * float(l['unit_price']) for l in (po.lines or [])), 2)
+    diff = round(float(po.amount) - ordered_value, 2) if po.amount is not None else 0.0
+    counts = {s: sum(1 for r in rows if r['status'] == s) for s in ('not_ordered', 'reduced', 'increased')}
+    parts = [f"{counts['not_ordered']} line(s) not ordered" if counts['not_ordered'] else '',
+             f"{counts['reduced']} with a smaller quantity" if counts['reduced'] else '',
+             f"{counts['increased']} with a larger quantity" if counts['increased'] else '']
+    return {'lines': rows, 'items_match': not any(counts.values()) if rows else True,
+            'items_summary': ', '.join(p for p in parts if p),
+            'ordered_value': ordered_value, 'amount_diff': diff, 'amount_match': abs(diff) < 0.005,
+            'quote_payment_terms': po.quote.payment_terms if po.quote else '',
+            'quote_incoterm': ' '.join(x for x in ((po.quote.incoterm if po.quote else ''),
+                                                    (po.quote.delivery_point if po.quote else '')) if x)}

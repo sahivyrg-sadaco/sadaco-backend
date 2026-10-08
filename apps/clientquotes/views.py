@@ -59,6 +59,7 @@ def _po_json(p):
         'attachment_id': p.attachment_id, 'status': p.status, 'status_label': p.get_status_display(),
         'lines': p.lines, 'lines_total': len(p.quote.lines) if p.quote else None,
         'checks': p.checks, 'notes': p.notes, 'reject_reason': p.reject_reason,
+        'reconcile': services.reconcile(p) if p.quote else None,
         'processed_by': p.processed_by.name if p.processed_by else None,
         'processed_at': p.processed_at.isoformat() if p.processed_at else None,
     }
@@ -198,6 +199,30 @@ def quote_followup(request, qid):
 
 
 # ── Client purchase orders ──────────────────────────────────────────────────
+def _po_lines(deal, quote, picked):
+    """(quoted lines by item, the PO's lines, error response or None). picked=None → every quoted line."""
+    source = services.quote_lines(quote) if quote else services.current_snapshot(deal)['lines']
+    by_item = {l['deal_item']: l for l in source if l.get('deal_item')}
+    lines = []
+    if picked is None:
+        lines = [dict(l) for l in by_item.values()]
+    else:
+        for row in picked:
+            try:
+                item_id, qty = int(row.get('deal_item')), float(row.get('qty'))
+            except (TypeError, ValueError):
+                return by_item, [], _bad('Each line needs an item and a quantity.', 'lines')
+            base = by_item.get(item_id)
+            if not base:
+                return by_item, [], _bad('A line on the PO is not on the quote.', 'lines')
+            if qty <= 0:
+                return by_item, [], _bad(f"Line {base['n']}: enter a quantity above zero.", 'lines')
+            lines.append({**base, 'qty': qty, 'total': round(qty * float(base['unit_price']), 2)})
+    if not lines:
+        return by_item, [], _bad('Tick at least one line the client ordered.', 'lines')
+    return by_item, lines, None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def record_po(request, pk):
@@ -215,27 +240,9 @@ def record_po(request, pk):
         amount = Decimal(str(d['amount'])).quantize(Decimal('0.01')) if d.get('amount') not in (None, '') else None
     except (ValueError, InvalidOperation):
         return _bad('Check the date and amount.')
-    # Which quoted lines the PO covers. Not given → every line of the quote.
-    source = services.quote_lines(quote) if quote else services.current_snapshot(deal)['lines']
-    by_item = {l['deal_item']: l for l in source if l.get('deal_item')}
-    picked = d.get('lines')
-    lines = []
-    if picked is None:
-        lines = [dict(l) for l in by_item.values()]
-    else:
-        for row in picked:
-            try:
-                item_id, qty = int(row.get('deal_item')), float(row.get('qty'))
-            except (TypeError, ValueError):
-                return _bad('Each line needs an item and a quantity.', 'lines')
-            base = by_item.get(item_id)
-            if not base:
-                return _bad('A line on the PO is not on the quote.', 'lines')
-            if qty <= 0:
-                return _bad(f"Line {base['n']}: enter a quantity above zero.", 'lines')
-            lines.append({**base, 'qty': qty, 'total': round(qty * float(base['unit_price']), 2)})
-    if not lines:
-        return _bad('Tick at least one line the client ordered.', 'lines')
+    by_item, lines, err = _po_lines(deal, quote, d.get('lines'))
+    if err:
+        return err
     if amount is None:
         amount = Decimal(str(round(sum(l['total'] for l in lines), 2)))
     with transaction.atomic():
@@ -254,14 +261,64 @@ def record_po(request, pk):
     return Response(_payload(deal), status=status.HTTP_201_CREATED)
 
 
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def edit_po(request, pid):
+    """
+    PUT /api/client-pos/{id}/ { po_number?, po_date?, amount?, notes?, lines? }
+    Correct a PO recorded wrongly (lines, quantities, amount) before it's processed.
+    """
+    p = get_object_or_404(ClientPO.objects.select_related('deal', 'quote'), pk=pid)
+    deal = p.deal
+    if (r := _forbid(request)):
+        return r
+    if p.status != 'received':
+        return _bad('Only a PO that has not been processed yet can be edited.')
+    d = request.data
+    if 'po_number' in d:
+        number = str(d.get('po_number') or '').strip()
+        if not number:
+            return _bad("Enter the client's PO number.", 'po_number')
+        p.po_number = number
+    try:
+        if 'po_date' in d:
+            p.po_date = _date(d.get('po_date'), p.po_date)
+        if 'amount' in d:
+            p.amount = (Decimal(str(d['amount'])).quantize(Decimal('0.01'))
+                        if d.get('amount') not in (None, '') else None)
+    except (ValueError, InvalidOperation):
+        return _bad('Check the date and amount.')
+    if 'lines' in d:
+        _, lines, err = _po_lines(deal, p.quote, d.get('lines'))
+        if err:
+            return err
+        p.lines = lines
+        if 'amount' not in d:
+            p.amount = Decimal(str(round(sum(l['total'] for l in lines), 2)))
+    if 'notes' in d:
+        p.notes = str(d.get('notes') or '')
+    p.save()
+    services.log(deal, request.user, f'Client PO {p.po_number} corrected before processing.')
+    return Response(_payload(deal))
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def process_po(request, pid):
     """
-    POST /api/client-pos/{id}/process/ { checks: { items, amount, terms }, notes }
-    All three confirmations are required. Processing moves the deal to
-    "Client's PO Received", marks it won, and stores the PO number as the
-    client's reference if none was set.
+    POST /api/client-pos/{id}/process/
+         { checks: { items, amount, terms }, terms_note?, notes }
+
+    Each check is either confirmed as matching or, where the PO differs from
+    the quote, accepted as a difference:
+      items:  'match' (only allowed when every quoted line is on the PO at its quoted
+              quantity) or 'accepted' (the differences on the PO are agreed)
+      amount: 'match' (only allowed when the PO amount equals the quoted prices of the
+              lines ordered) or 'accepted'
+      terms:  'match' or 'differ' (then terms_note says what was agreed)
+    true is read as 'match' for items/amount/terms when that is the case, else 'accepted'.
+    Processing moves the deal to "Client's PO Received", marks it won, and
+    stores the PO number as the client's reference if none was set.
     """
     p = get_object_or_404(ClientPO.objects.select_related('deal', 'quote'), pk=pid)
     deal = p.deal
@@ -273,9 +330,24 @@ def process_po(request, pid):
     missing = [k for k in ('items', 'amount', 'terms') if not checks.get(k)]
     if missing:
         return _bad('Confirm every check before processing: items and quantities, amount, and terms.')
+    rec = services.reconcile(p)
+    # Older clients send true; read it as "matches" where it does, "accepted" where it doesn't.
+    items = checks['items'] if checks['items'] in ('match', 'accepted') else ('match' if rec['items_match'] else 'accepted')
+    amount = checks['amount'] if checks['amount'] in ('match', 'accepted') else ('match' if rec['amount_match'] else 'accepted')
+    terms = checks['terms'] if checks['terms'] in ('match', 'differ') else 'match'
+    if items == 'match' and not rec['items_match']:
+        return _bad(f"The PO's lines differ from the quote ({rec['items_summary']}). Accept the differences, or correct the PO.")
+    if amount == 'match' and not rec['amount_match']:
+        return _bad('The PO amount differs from the quoted prices of the lines ordered. Accept the difference, or correct the PO.')
+    terms_note = str(request.data.get('terms_note') or '').strip()
+    if terms == 'differ' and len(terms_note) < 5:
+        return _bad('Say what was agreed on the terms, e.g. "Client asked 45 days instead of 30".', 'terms_note')
     with transaction.atomic():
         p.status = 'processed'
-        p.checks = {k: True for k in ('items', 'amount', 'terms')}
+        p.checks = {'items': items, 'amount': amount, 'terms': terms,
+                    **({'terms_note': terms_note} if terms == 'differ' else {}),
+                    **({'items_summary': rec['items_summary']} if items == 'accepted' else {}),
+                    **({'amount_diff': rec['amount_diff']} if amount == 'accepted' else {})}
         if request.data.get('notes'):
             p.notes = (p.notes + '\n' if p.notes else '') + str(request.data['notes'])
         p.processed_by = request.user
@@ -286,8 +358,11 @@ def process_po(request, pid):
         deal.deal_status = 'won'
         deal.save(update_fields=['client_ref', 'deal_status'])
     diff = ''
-    if p.quote and p.amount is not None and abs(float(p.amount) - float(p.quote.total)) > 0.005:
-        diff = f' Amount differs from the quote by {p.currency} {float(p.amount) - float(p.quote.total):,.2f} (accepted).'
+    if amount == 'accepted' and not rec['amount_match']:
+        diff = (f' Amount differs from the quoted prices of the lines ordered by '
+                f"{p.currency} {rec['amount_diff']:,.2f} (accepted).")
+    if terms == 'differ':
+        diff += f' Terms differ from the quote (accepted): {terms_note}'
     won = {l['deal_item'] for l in p.lines}
     quoted = services.quote_lines(p.quote) if p.quote else []
     lost = [l for l in quoted if l.get('deal_item') and l['deal_item'] not in won]
