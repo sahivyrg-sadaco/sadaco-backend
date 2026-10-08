@@ -69,6 +69,9 @@ class DealCost(models.Model):
     breakdown      = models.JSONField(default=list, blank=True)
     weight_rate    = models.DecimalField(max_digits=12, decimal_places=4, null=True, blank=True)  # per kg
     weight_minimum = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # Charge by chargeable weight: the higher of actual and volumetric (L×W×H cm³ ÷ this).
+    # 5000 is typical for courier, 6000 for air freight; empty = actual weight only.
+    volumetric_divisor = models.IntegerField(null=True, blank=True)
 
     # Where the cost came from, when it was created automatically.
     shipment       = models.ForeignKey('logistics.Shipment', null=True, blank=True,

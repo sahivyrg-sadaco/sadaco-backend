@@ -37,6 +37,44 @@ class DealQuoteListCreateView(APIView):
 class DealQuoteDetailView(APIView):
     permission_classes = [IsSalesOrOperationsOrAdmin]
 
+    def put(self, request, pk, qid):
+        """
+        PUT /api/deals/{id}/quotes/{qid}/ { supplier_ref?, payment_terms?, incoterm?, lead_time_days? }
+        Changing the quick lead time updates the items that were using it
+        (items given their own lead time keep it).
+        """
+        from django.db.models import Q
+        from apps.deals.models import DealActivity
+        quote = SupplierQuote.objects.filter(deal_id=pk, pk=qid).select_related('supplier').first()
+        if not quote:
+            return Response({'error': 'Not found'}, status=404)
+        d = request.data
+        changed = []
+        for f in ('supplier_ref', 'payment_terms', 'incoterm'):
+            if f in d and str(d[f] or '').strip() != getattr(quote, f):
+                setattr(quote, f, str(d[f] or '').strip())
+                changed.append(f.replace('_', ' '))
+        if 'lead_time_days' in d:
+            raw = d['lead_time_days']
+            try:
+                new = int(raw) if raw not in (None, '') else None
+                if new is not None and new < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return Response({'lead_time_days': ['Enter whole days.']}, status=400)
+            old = quote.lead_time_days
+            if new != old:
+                following = Q(lead_time_days__isnull=True) | (Q(lead_time_days=old) if old is not None else Q(pk__in=[]))
+                SupplierQuoteItem.objects.filter(quote=quote).filter(following).update(lead_time_days=new)
+                quote.lead_time_days = new
+                changed.append('lead time')
+        quote.save()
+        if changed:
+            DealActivity.objects.create(deal_id=pk, user=request.user, activity_type='quote',
+                                        description=f"Quote from {quote.supplier.company_name if quote.supplier else 'supplier'} "
+                                                    f"edited: {', '.join(changed)}.")
+        return Response(SupplierQuoteSerializer(quote).data)
+
     def delete(self, request, pk, qid):
         quote = SupplierQuote.objects.filter(deal_id=pk, pk=qid).first()
         if not quote:

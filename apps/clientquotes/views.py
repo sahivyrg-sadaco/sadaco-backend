@@ -300,6 +300,10 @@ def process_po(request, pid):
         detail += ' Smaller quantity: ' + ', '.join(f"line {l['n']} ({l['qty']:g})" for l in reduced) + '.'
     services.log(deal, request.user, f'Client PO {p.po_number} processed.{detail}{diff}')
     services.advance_stage(deal, "Client's PO Received", request.user)
+    cleared = services.clear_lost_awards(deal)
+    if cleared:
+        services.log(deal, request.user, 'Awards removed from lines the client didn\'t order: '
+                     + ', '.join(f'line {n}' for n in cleared) + '.')
     from apps.finance.stages import sync
     sync(deal, request.user)
     return Response(_payload(deal))

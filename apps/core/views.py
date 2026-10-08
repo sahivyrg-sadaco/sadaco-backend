@@ -17,7 +17,49 @@ def _with_added(kind, defaults):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def seller_entities(request):
-    return Response(settings.SELLER_ENTITIES)
+    return Response(merged_entities())
+
+
+ENTITY_FIELDS = ('address_line1', 'address_line2', 'country', 'tax_id', 'phone', 'email')
+BANK_FIELDS = ('beneficiary', 'bank', 'swift', 'account', 'aba', 'iban', 'bank_address')
+
+
+def merged_entities():
+    """settings.SELLER_ENTITIES with any details admins saved in the app laid over them."""
+    import copy
+    from .models import CompanyEntity
+    out = copy.deepcopy(settings.SELLER_ENTITIES)
+    for row in CompanyEntity.objects.all():
+        base = out.setdefault(row.name, {})
+        for k in ENTITY_FIELDS:
+            if k in row.details:
+                base[k] = row.details[k]
+        for cur, acct in (row.details.get('bank_accounts') or {}).items():
+            base.setdefault('bank_accounts', {}).setdefault(cur, {}).update(
+                {k: acct.get(k, '') for k in BANK_FIELDS if k in acct})
+    return out
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def company_entity(request):
+    """PUT /api/config/company/ { name, details: {address_line1…, bank_accounts: {USD: {...}}} } (admin only)"""
+    from .models import CompanyEntity
+    if getattr(request.user, 'role', None) != 'admin':
+        return Response({'error': 'Only an admin can change company details.'}, status=403)
+    name = str(request.data.get('name') or '').strip()
+    if name not in settings.SELLER_ENTITIES:
+        return Response({'error': 'Unknown company entity.'}, status=400)
+    raw = request.data.get('details') or {}
+    details = {k: str(raw.get(k) or '').strip() for k in ENTITY_FIELDS if k in raw}
+    banks = {}
+    for cur, acct in (raw.get('bank_accounts') or {}).items():
+        cur = str(cur).upper()[:5]
+        banks[cur] = {k: str((acct or {}).get(k) or '').strip() for k in BANK_FIELDS}
+    if banks:
+        details['bank_accounts'] = banks
+    CompanyEntity.objects.update_or_create(name=name, defaults={'details': details})
+    return Response(merged_entities())
 
 
 @api_view(['GET'])

@@ -46,6 +46,7 @@ urlpatterns = [
     path('<int:pk>/quotes/<int:qid>/apply/',  DealQuoteApplyView.as_view()),
     path('<int:pk>/quotes/<int:qid>/items/',  DealQuoteItemListCreateView.as_view()),
     path('<int:pk>/quote-items/add/',         DealQuoteAddItemView.as_view()),
+    path('<int:pk>/copy/',                    views.copy_deal),
 
     # Attachments + generation
     path('<int:pk>/attachments/',          DealAttachmentListCreateView.as_view()),

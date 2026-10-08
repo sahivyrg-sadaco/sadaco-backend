@@ -178,7 +178,9 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
 
     extra_est = sum(values['est'].values())
     extra_act = sum(values['act'].values())
-    revenue = sell + charges
+    # Credit notes given to the client (returns, price corrections) reduce revenue.
+    credit_notes = sum(float(i.amount) for i in deal.client_invoices.all() if i.kind == 'credit' and not i.cancelled)
+    revenue = sell + charges - credit_notes
 
     def col(extra, goods_used):
         profit = revenue - goods_used - extra
@@ -213,6 +215,7 @@ def compute(deal, costs=None, goods=None, sell=None, settings_obj=None):
         'estimate': col(extra_est, goods),
         'actual_so_far': col(extra_act, goods_actual),
         'goods_invoice_difference': round(goods_diff, 2),
+        'credit_notes': round(credit_notes, 2),
         'costs_total': len(costs),
         'costs_invoiced': invoiced,
         'by_category': sorted(

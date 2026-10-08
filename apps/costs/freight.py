@@ -34,11 +34,13 @@ def item_logistics(deal):
     for s in DealItemSplit.objects.filter(parent_item__in=items):
         awards.setdefault(s.parent_item_id, []).append(s)
 
-    saved = {}
+    saved, saved_dims = {}, {}
     for c in DealCost.objects.filter(deal=deal, basis='weight'):
         for b in c.breakdown or []:
             if b.get('unit_kg') is not None:
                 saved[b['deal_item']] = b['unit_kg']
+            if b.get('dims_cm'):
+                saved_dims[b['deal_item']] = b['dims_cm']
 
     lines, max_lead = [], None
     for k, it in enumerate(items, 1):
@@ -88,6 +90,7 @@ def item_logistics(deal):
         lines.append({
             'deal_item': it.id, 'n': k, 'description': it.description, 'qty': float(it.qty), 'unit': it.unit,
             'unit_kg': weight, 'weight_source': wsrc, 'lead_time_days': lead, 'lead_source': lsrc,
+            'dims_cm': saved_dims.get(it.id),
         })
     rows = {c.category: c for c in DealCost.objects.filter(deal=deal, basis='weight')}
     from .models import DealCostSettings
@@ -99,24 +102,41 @@ def item_logistics(deal):
         legs.append({'category': key, 'label': label, 'transit_days': transit.get(key),
                      'rate_per_kg': _f(c.weight_rate) if c else None,
                      'min_charge': _f(c.weight_minimum) if c else None,
+                     'volumetric_divisor': c.volumetric_divisor if c else None,
                      'estimate': _f(c.estimate_amount) if c else None})
     return {'lines': lines, 'legs': legs, 'max_lead_time_days': max_lead, 'currency': deal.currency}
 
 
 def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
     """
-    lines_in: [{deal_item, unit_kg}]   legs_in: [{category, rate_per_kg, min_charge}]
+    lines_in: [{deal_item, unit_kg, dims_cm?: [L, W, H] per unit}]
+    legs_in:  [{category, rate_per_kg, min_charge, transit_days, volumetric_divisor?}]
     Returns the cost rows written. A leg with no rate is left untouched.
+    With a volumetric divisor, each line is charged on the higher of its actual
+    weight and its volumetric weight (L×W×H in cm ÷ divisor, per unit × qty).
     """
+    def _dims(v):
+        try:
+            d = [float(x) for x in (v or [])]
+            return d if len(d) == 3 and all(x > 0 for x in d) else None
+        except (TypeError, ValueError):
+            raise ValueError('Dimensions must be numbers.')
     weights = {int(l['deal_item']): (float(l['unit_kg']) if l.get('unit_kg') not in (None, '') else None)
                for l in lines_in}
+    dims = {int(l['deal_item']): _dims(l.get('dims_cm')) for l in lines_in}
     items = list(DealItem.objects.filter(deal=deal, is_split_child=False).order_by('item_number', 'id'))
     rows = []
     for k, it in enumerate(items, 1):
         w = weights.get(it.id)
-        rows.append({'deal_item': it.id, 'n': k, 'description': it.description[:80],
-                     'unit_kg': w, 'kg': round((w or 0) * float(it.qty), 3)})
-    total_kg = sum(r['kg'] for r in rows)
+        rows.append({'deal_item': it.id, 'n': k, 'description': it.description[:80], 'qty': float(it.qty),
+                     'unit_kg': w, 'dims_cm': dims.get(it.id), 'actual_kg': round((w or 0) * float(it.qty), 3)})
+
+    def charged(r, divisor):
+        """Weight this line is charged on for a leg."""
+        if divisor and r['dims_cm']:
+            l, w_, h = r['dims_cm']
+            return round(max(r['actual_kg'], l * w_ * h / divisor * r['qty']), 3)
+        return r['actual_kg']
     # Transit days are kept for the quoted delivery time, whether or not a rate is given.
     from .models import DealCostSettings
     transit = {}
@@ -143,11 +163,17 @@ def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
             raise ValueError('Rates and minimum charges must be numbers.')
         if rate <= 0:
             continue
+        try:
+            divisor = int(leg.get('volumetric_divisor') or 0) or None
+        except (TypeError, ValueError):
+            raise ValueError('The volumetric divisor must be a whole number, e.g. 5000 or 6000.')
+        leg_rows = [{**r, 'kg': charged(r, divisor)} for r in rows]
+        total_kg = sum(r['kg'] for r in leg_rows)
         raw = total_kg * rate
         amount = round(max(raw, minimum), 2)
         factor = (amount / raw) if raw > 0 else 0
         breakdown = []
-        for r in rows:
+        for r in leg_rows:
             share = round(r['kg'] * rate * factor, 2) if raw > 0 else 0
             breakdown.append({**r, 'amount': share})
         # Rounding: put any cent difference on the heaviest line.
@@ -167,12 +193,14 @@ def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
         c.breakdown = breakdown
         c.weight_rate = Decimal(str(rate))
         c.weight_minimum = Decimal(str(minimum)) if minimum else None
+        c.volumetric_divisor = divisor
         minimum_note = f' (minimum {deal.currency} {minimum:,.2f} applied)' if minimum and minimum > raw else ''
+        basis = f'By chargeable weight (÷{divisor})' if divisor else 'By weight'
         if display_unit == 'lb':   # described the way it was entered; stored in kg either way
-            c.description = (f'By weight: {total_kg / 0.45359237:,.1f} lb × {deal.currency} '
+            c.description = (f'{basis}: {total_kg / 0.45359237:,.1f} lb × {deal.currency} '
                              f'{rate * 0.45359237:,.2f}/lb{minimum_note}')
         else:
-            c.description = f'By weight: {total_kg:,.1f} kg × {deal.currency} {rate:,.2f}/kg{minimum_note}'
+            c.description = f'{basis}: {total_kg:,.1f} kg × {deal.currency} {rate:,.2f}/kg{minimum_note}'
         c.save()
         written.append(c)
     return written

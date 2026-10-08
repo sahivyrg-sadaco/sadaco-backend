@@ -23,6 +23,11 @@ class ClientInvoice(models.Model):
     currency     = models.CharField(max_length=10, default='USD')
     cancelled    = models.BooleanField(default=False)
     notes        = models.TextField(blank=True)
+    # A credit note is a ClientInvoice of kind 'credit' that reduces the invoice it credits.
+    kind         = models.CharField(max_length=10, default='invoice',
+                                    choices=[('invoice', 'Invoice'), ('credit', 'Credit note')])
+    credits      = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT,
+                                     related_name='credit_notes')
     created_by   = models.ForeignKey('accounts.User', null=True, blank=True,
                                      on_delete=models.SET_NULL, related_name='+')
     created_at   = models.DateTimeField(auto_now_add=True)

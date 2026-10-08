@@ -25,7 +25,8 @@ def _invoiced(deal):
     from .models import ClientInvoice
     from .services import billing_base
     base, _ = billing_base(deal)
-    total = sum(float(i.amount) for i in ClientInvoice.objects.filter(deal=deal, cancelled=False))
+    total = sum(float(i.amount) * (1 if i.kind == 'invoice' else -1)
+                for i in ClientInvoice.objects.filter(deal=deal, cancelled=False))
     return base > 0 and total >= base - 0.01
 
 

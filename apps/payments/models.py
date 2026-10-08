@@ -12,6 +12,13 @@ class Payment(models.Model):
     payment_date = models.DateField()
     method       = models.CharField(max_length=100, blank=True)
     notes        = models.TextField(blank=True)
+    # payment: money received. refund: money returned to the client (negative).
+    # credit_out / credit_in: client credit moved from one invoice to another (negative / positive),
+    # linked by transfer_group so both sides are undone together.
+    kind           = models.CharField(max_length=12, default='payment',
+                                      choices=[('payment', 'Payment'), ('refund', 'Refund'),
+                                               ('credit_out', 'Credit moved out'), ('credit_in', 'Client credit applied')])
+    transfer_group = models.CharField(max_length=40, blank=True, db_index=True)
     recorded_by  = models.ForeignKey(
         'accounts.User', null=True, blank=True, on_delete=models.SET_NULL,
     )

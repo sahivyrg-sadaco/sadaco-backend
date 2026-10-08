@@ -69,7 +69,7 @@ MIDDLEWARE = [
 ]
 
 # Shown on /api/health/ and compared with the app's own label, so it's clear which update is live.
-APP_VERSION = '2026-10-07.2'
+APP_VERSION = '2026-10-07.4'
 
 ROOT_URLCONF = 'sadaco.urls'
 
@@ -143,7 +143,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 # ── i18n / timezone ───────────────────────────────────────────────────────────
 LANGUAGE_CODE = 'es-ve'
-TIME_ZONE     = 'America/New_York'
+TIME_ZONE     = env('TIME_ZONE', default='America/Caracas')   # Venezuela, UTC−4 all year
 USE_I18N      = True
 USE_TZ        = True
 

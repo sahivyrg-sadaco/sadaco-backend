@@ -165,6 +165,9 @@ def client_payment(request, iid):
     if (r := _forbid(request, PAYMENT_ROLES)):
         return r
 
+    if inv.kind == 'credit':
+        return _bad('Payments are recorded against invoices, not credit notes.')
+
     def go():
         d = request.data
         amount = _money(d.get('amount'), 'amount')
@@ -180,6 +183,49 @@ def client_payment(request, iid):
     return _handle(go)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def credit_note(request, iid):
+    """
+    POST /api/client-invoices/{id}/credit-note/ { amount, reason, number?, date? }
+    Reduces what the client owes on that invoice (e.g. a returned item or a
+    price correction). At most the invoice's amount, less earlier credit notes.
+    """
+    from decimal import Decimal
+    inv = get_object_or_404(ClientInvoice.objects.select_related('deal'), pk=iid)
+    if (r := _forbid(request, INVOICE_ROLES)):
+        return r
+    if inv.kind != 'invoice' or inv.cancelled:
+        return _bad('Credit notes go against a live invoice.')
+
+    def go():
+        d = request.data
+        amount = _money(d.get('amount'), 'amount')
+        already = sum(float(c.amount) for c in inv.credit_notes.filter(cancelled=False))
+        room = round(float(inv.amount) - already, 2)
+        if float(amount) > room + 0.001:
+            raise ValueError(f'At most {inv.currency} {room:,.2f} can still be credited on {inv.number}.')
+        reason = str(d.get('reason') or '').strip()
+        if not reason:
+            raise ValueError('Say what the credit is for, e.g. "Item 3 returned".')
+        number = str(d.get('number') or '').strip()
+        if not number:
+            n = inv.credit_notes.count() + 1
+            number = f'{inv.number}-NC{n}'
+            while ClientInvoice.objects.filter(number=number).exists():
+                n += 1
+                number = f'{inv.number}-NC{n}'
+        if ClientInvoice.objects.filter(number=number).exists():
+            raise ValueError('Another invoice or credit note already uses this number.')
+        when = _date(d.get('date'), 'date', timezone.localdate())
+        ClientInvoice.objects.create(
+            deal=inv.deal, number=number, description=reason[:200], invoice_date=when, due_date=when,
+            amount=Decimal(str(amount)), currency=inv.currency, kind='credit', credits=inv, created_by=request.user)
+        services.log(inv.deal, request.user, f'Credit note {number} on {inv.number}: {inv.currency} {float(amount):,.2f} ({reason}).')
+        return Response(_money_payload(inv.deal, request.user), status=status.HTTP_201_CREATED)
+    return _handle(go)
+
+
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def client_payment_delete(request, pid):
@@ -188,6 +234,10 @@ def client_payment_delete(request, pid):
     if (r := _forbid(request, PAYMENT_ROLES)):
         return r
     deal = p.deal
+    if p.transfer_group:
+        from . import credit
+        credit.undo(p.transfer_group, request.user)
+        return Response(_money_payload(deal, request.user) if deal else {})
     services.log(deal, request.user, f'Payment on {p.invoice_ref} of {p.currency} {p.amount:,.2f} removed.')
     p.delete()
     return Response(_money_payload(deal, request.user) if deal else {})
@@ -370,3 +420,88 @@ def payment_plan(request, owner, oid):
         steps = own.steps if own else (_plans.from_text(obj.payment_terms) or None)
         source = field if own else ('terms' if steps else 'none')
     return Response({'steps': steps, 'text': _plans.describe(steps) if steps else '', 'source': source, 'own': bool(own)})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def overrides(request):
+    """GET /api/overrides/ → every payment-rule override, newest first (admin only)."""
+    from apps.deals.models import DealActivity
+    if getattr(request.user, 'role', None) != 'admin':
+        return Response({'error': 'Only an admin can see overrides.'}, status=status.HTTP_403_FORBIDDEN)
+    rows = (DealActivity.objects.filter(activity_type='override').select_related('deal', 'deal__client', 'user')
+            .order_by('-created_at')[:500])
+    out = []
+    for a in rows:
+        text = a.description or ''
+        rule, _, reason = text.partition(' Reason: ')
+        if rule.startswith('Payment rule overridden by') and ': ' in rule:
+            rule = rule.split(': ', 1)[1]
+        out.append({'id': a.id, 'when': a.created_at.isoformat(), 'deal_id': a.deal_id,
+                    'deal_reference': a.deal.reference if a.deal else '',
+                    'client': a.deal.client.dropdown_name if a.deal and a.deal.client else '',
+                    'by': a.user.name if a.user else '', 'rule': rule.strip(), 'reason': reason.strip()})
+    return Response(out)
+
+
+# ── Client credit ────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def client_credit(request, cid):
+    """GET /api/clients/{id}/credit/ → available credit per currency, where it sits, and past moves."""
+    from apps.clients.models import Client
+    from . import credit
+    return Response(credit.summary(get_object_or_404(Client, pk=cid)))
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def client_credit_refund(request, cid):
+    """POST /api/clients/{id}/credit/refund/ { currency, amount, date?, method?, notes? }"""
+    from apps.clients.models import Client
+    from . import credit
+    c = get_object_or_404(Client, pk=cid)
+    if (r := _forbid(request, PAYMENT_ROLES)):
+        return r
+
+    def go():
+        d = request.data
+        credit.refund(c, str(d.get('currency') or 'USD'), float(_money(d.get('amount'), 'amount')), request.user,
+                      date=_date(d.get('date'), 'date', timezone.localdate()), method=str(d.get('method') or '').strip(),
+                      notes=str(d.get('notes') or '').strip())
+        return Response(credit.summary(c), status=status.HTTP_201_CREATED)
+    return _handle(go)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def client_credit_apply(request, cid):
+    """POST /api/clients/{id}/credit/apply/ { invoice, amount, date? } → credit moved onto that invoice"""
+    from apps.clients.models import Client
+    from . import credit
+    c = get_object_or_404(Client, pk=cid)
+    if (r := _forbid(request, PAYMENT_ROLES)):
+        return r
+
+    def go():
+        d = request.data
+        target = ClientInvoice.objects.filter(pk=d.get('invoice')).select_related('deal').first()
+        if not target:
+            raise ValueError('Choose the invoice to apply the credit to.')
+        credit.apply(c, target, float(_money(d.get('amount'), 'amount')), request.user, date=_date(d.get('date'), 'date', timezone.localdate()))
+        return Response(credit.summary(c), status=status.HTTP_201_CREATED)
+    return _handle(go)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def client_credit_undo(request, group):
+    """DELETE /api/client-credit/{group}/ → undo a refund or a credit move (all its sides)."""
+    from . import credit
+    if (r := _forbid(request, PAYMENT_ROLES)):
+        return r
+
+    def go():
+        credit.undo(group, request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    return _handle(go)

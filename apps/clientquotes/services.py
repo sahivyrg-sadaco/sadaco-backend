@@ -171,3 +171,30 @@ def board_entries(deals_qs, today):
             'flags': [{'level': 'warn', 'text': 'Check it against the quote and process it before ordering from suppliers'}],
         })
     return out
+
+
+def clear_lost_awards(deal):
+    """
+    Once a PO is processed, lines the client didn't order shouldn't stay awarded:
+    remove their supplier awards (and split lines). Returns the line numbers cleared.
+    """
+    from apps.deals.models import DealItem, DealItemSplit
+    from apps.deals.services import remove_item_split
+    won = won_items(deal)
+    if won is None:
+        return []
+    cleared = []
+    items = DealItem.objects.filter(deal=deal, is_split_child=False).order_by('item_number', 'id')
+    for n, it in enumerate(items, 1):
+        if won.get(it.id, 0) > 0:
+            continue
+        splits = list(DealItemSplit.objects.filter(parent_item=it))
+        if not splits and not it.awarded_quote_id:
+            continue
+        for sp in splits:
+            remove_item_split(it.id, sp.supplier_quote_id)
+        if it.awarded_quote_id:
+            it.awarded_quote = None
+            it.save(update_fields=['awarded_quote'])
+        cleared.append(n)
+    return cleared

@@ -252,3 +252,51 @@ class DealSplitDeleteView(APIView):
         if not removed:
             return Response({'error': 'Split not found'}, status=404)
         return Response(status=204)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def copy_deal(request, pk):
+    """
+    POST /api/deals/{id}/copy/ { copy_prices: bool }
+    A new deal for the same client with the same terms and line items, for a
+    repeat order. Costs and prices are copied only if asked (they go stale);
+    otherwise lines start at the deal's target margin. Quotes, RFQs, POs,
+    orders and money are not copied.
+    """
+    from decimal import Decimal
+    from django.db import transaction
+    from apps.costs.models import DealCostSettings
+    from apps.costs.services import target_margin
+    from .models import DealActivity, DealItem
+    if getattr(request.user, 'role', None) not in ('admin', 'sales'):
+        return Response({'error': 'Only admin and sales users can copy deals.'}, status=403)
+    src = get_object_or_404(Deal, pk=pk)
+    with_prices = bool(request.data.get('copy_prices'))
+    target = Decimal(str(target_margin(src)[0] / 100)).quantize(Decimal('0.0001'))
+    with transaction.atomic():
+        new = Deal.objects.create(
+            client=src.client, owner=request.user, seller_entity=src.seller_entity, currency=src.currency,
+            exchange_rate=src.exchange_rate, incoterm=src.incoterm, port_location=src.port_location,
+            payment_terms=src.payment_terms, notes=src.notes)
+        for k, it in enumerate(src.items.filter(is_split_child=False).order_by('item_number', 'id'), 1):
+            DealItem.objects.create(
+                deal=new, item_number=k, description=it.description, part_number=it.part_number,
+                brand=it.brand, model_name=it.model_name, qty=it.qty, unit=it.unit,
+                unit_cost=it.unit_cost if with_prices else 0, unit_price=it.unit_price if with_prices else 0,
+                margin_pct=it.margin_pct if with_prices else target)
+        settings_src = DealCostSettings.objects.filter(deal=src).first()
+        if settings_src and settings_src.target_margin is not None:
+            DealCostSettings.objects.create(deal=new, target_margin=settings_src.target_margin)
+        from django.core.exceptions import ObjectDoesNotExist
+        try:
+            plan = src.payment_plan
+        except ObjectDoesNotExist:
+            plan = None
+        if plan is not None:
+            type(plan).objects.create(deal=new, steps=plan.steps)
+        DealActivity.objects.create(deal=new, user=request.user, activity_type='created',
+                                    description=f'Copied from {src.reference}' + (' with prices.' if with_prices else '.'))
+        DealActivity.objects.create(deal=src, user=request.user, activity_type='note',
+                                    description=f'Copied to {new.reference} for a repeat order.')
+    return Response({'id': new.id, 'reference': new.reference}, status=201)

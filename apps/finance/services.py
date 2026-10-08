@@ -51,25 +51,47 @@ def _due_info(due, status, today):
 
 # ── Rows ────────────────────────────────────────────────────────────────────
 def invoice_rows(invoices, today=None):
+    """
+    Rows for client invoices and credit notes. An invoice's balance is its amount,
+    less credit notes against it, less payments. Credit notes have no balance of
+    their own (status 'credit').
+    """
     today = today or timezone.localdate()
     invoices = list(invoices)
     pays = {}
     for p in Payment.objects.filter(invoice_ref__in=[i.number for i in invoices]).order_by('payment_date', 'id'):
         pays.setdefault(p.invoice_ref, []).append(p)
+    credited, credit_numbers = {}, {}
+    for c in ClientInvoice.objects.filter(kind='credit', cancelled=False, credits_id__in=[i.id for i in invoices]):
+        credited[c.credits_id] = credited.get(c.credits_id, 0.0) + float(c.amount)
+        credit_numbers.setdefault(c.credits_id, []).append(c.number)
+    numbers = {i.id: i.number for i in invoices}
     rows = []
     for i in invoices:
         plist = pays.get(i.number, [])
         paid = sum(float(p.amount) for p in plist)
-        status, balance = ('cancelled', 0.0) if i.cancelled else _status(i.amount, paid)
-        overdue, days_to_due = _due_info(i.due_date, status if not i.cancelled else 'paid', today)
+        less = credited.get(i.id, 0.0)
+        net = float(i.amount) - less
+        # Paid beyond what's owed (overpayment, or a credit note after payment) = client credit.
+        excess = round(max(0.0, paid - (0.0 if i.cancelled else net)), 2) if i.kind == 'invoice' else 0.0
+        if i.cancelled:
+            status, balance = 'cancelled', 0.0
+        elif i.kind == 'credit':
+            status, balance = 'credit', 0.0
+        else:
+            status, balance = _status(float(i.amount) - less, paid)
+        overdue, days_to_due = _due_info(i.due_date, status if status not in ('cancelled', 'credit') else 'paid', today)
         rows.append({
             'id': i.id, 'deal': i.deal_id, 'number': i.number, 'description': i.description,
             'invoice_date': i.invoice_date.isoformat(), 'due_date': i.due_date.isoformat(),
             'amount': float(i.amount), 'currency': i.currency, 'paid': round(paid, 2), 'balance': balance,
             'status': status, 'days_overdue': overdue or 0, 'days_to_due': days_to_due,
             'cancelled': i.cancelled, 'notes': i.notes,
+            'kind': i.kind, 'credited': round(less, 2), 'credit_notes': credit_numbers.get(i.id, []), 'excess': excess,
+            'credits': i.credits_id, 'credits_number': numbers.get(i.credits_id) or (i.credits.number if i.credits_id else None),
             'payments': [{'id': p.id, 'amount': float(p.amount), 'currency': p.currency,
-                          'payment_date': p.payment_date.isoformat(), 'method': p.method, 'notes': p.notes}
+                          'payment_date': p.payment_date.isoformat(), 'method': p.method, 'notes': p.notes,
+                          'kind': p.kind, 'transfer_group': p.transfer_group}
                          for p in plist],
         })
     return rows
@@ -202,7 +224,7 @@ def invoice_suggestions(deal, invoiced_total):
             days = steps[0].get('days', 0) if len(steps) == 1 and steps[0]['when'] == 'after_shipping' else 0
             sugg.append({'description': 'Balance (Saldo)' if invoiced_total > 0 else 'Invoice (Factura)',
                          'amount': remaining, 'due_days': days, 'due_on_invoice': days == 0})
-    n = ClientInvoice.objects.filter(deal=deal).count() + 1
+    n = ClientInvoice.objects.filter(deal=deal, kind='invoice').count() + 1
     base = deal.reference or f'D{deal.pk}'
     while ClientInvoice.objects.filter(number=f'{base}-F{n}').exists():
         n += 1
@@ -218,7 +240,8 @@ def deal_money(deal):
     inv = invoice_rows(ClientInvoice.objects.filter(deal=deal), today)
     pay = payable_rows(_payables_qs().filter(deal=deal), today)
     live_inv = [r for r in inv if not r['cancelled']]
-    invoiced = sum(r['amount'] for r in live_inv)
+    # Net of credit notes.
+    invoiced = sum(r['amount'] if r['kind'] == 'invoice' else -r['amount'] for r in live_inv)
     received = sum(r['paid'] for r in inv)
 
     from apps.logistics.models import SupplierOrder
@@ -252,6 +275,7 @@ def deal_money(deal):
         },
         'suppliers': [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in c.items()} for c in by_cur.values()],
         'next_invoice': invoice_suggestions(deal, invoiced),
+        'client_credit': _client_credit_brief(deal),
         'client_gate': _client_gate(deal),
     }
 
@@ -288,12 +312,13 @@ def _with_deal(rows, deals_by_id):
         d = deals_by_id.get(r['deal'])
         r['deal_reference'] = d.reference if d else None
         r['client_name'] = d.client.dropdown_name if d else None
+        r['client_id'] = d.client_id if d else None
     return rows
 
 
 def receivables(user, include_paid=False):
     deals = _deals_for(user)
-    qs = ClientInvoice.objects.filter(deal__in=deals, cancelled=False).order_by('due_date', 'id')
+    qs = ClientInvoice.objects.filter(deal__in=deals, cancelled=False, kind='invoice').order_by('due_date', 'id')
     rows = invoice_rows(qs)
     if not include_paid:
         rows = [r for r in rows if r['status'] != 'paid']
@@ -320,7 +345,7 @@ def _n_days(n):
 def board_entries(deals_qs, today):
     out = []
     by_id = {d.id: d for d in deals_qs.select_related('client')}
-    for r in invoice_rows(ClientInvoice.objects.filter(deal__in=deals_qs, cancelled=False), today):
+    for r in invoice_rows(ClientInvoice.objects.filter(deal__in=deals_qs, cancelled=False, kind='invoice'), today):
         if r['status'] == 'paid' or not r['days_overdue']:
             continue
         d = by_id[r['deal']]
@@ -415,3 +440,11 @@ def sync_cost_payable(cost):
     if p.due_date < p.invoice_date:
         p.due_date = p.invoice_date
     p.save()
+
+
+def _client_credit_brief(deal):
+    """This client's credit in the deal's currency: { available, sources: [{number, deal_reference, excess}] }."""
+    from .credit import sources
+    srcs = sources(deal.client, deal.currency) if deal.client_id else []
+    return {'currency': deal.currency, 'available': round(sum(s['excess'] for s in srcs), 2),
+            'sources': [{k: v for k, v in s.items() if k != 'invoice'} for s in srcs]}

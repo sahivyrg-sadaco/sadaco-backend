@@ -24,3 +24,19 @@ class ConfigOption(models.Model):
 
     def __str__(self):
         return f'{self.kind}: {self.value}'
+
+
+class CompanyEntity(models.Model):
+    """
+    Details for one selling entity (address, tax id, bank accounts per currency),
+    edited by admins in the app. Overrides the defaults in settings.SELLER_ENTITIES.
+    """
+    name       = models.CharField(max_length=200, unique=True)
+    details    = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'company_entities'
+
+    def __str__(self):
+        return self.name
