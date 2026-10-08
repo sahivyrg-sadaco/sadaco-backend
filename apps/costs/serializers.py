@@ -15,10 +15,10 @@ class DealCostSerializer(serializers.ModelSerializer):
             'currency', 'fx_rate', 'client_treatment', 'charge_amount',
             'invoice_ref', 'invoice_date', 'overrun_acknowledged', 'notes',
             'shipment', 'shipment_label', 'supplier_order',
-            'basis', 'breakdown', 'weight_rate', 'weight_minimum',
+            'basis', 'breakdown', 'weight_rate', 'weight_minimum', 'charge_mode',
             'created_at', 'updated_at',
         ]
-        read_only_fields = ['id', 'deal', 'shipment', 'supplier_order', 'basis', 'breakdown',
+        read_only_fields = ['id', 'deal', 'shipment', 'supplier_order', 'basis', 'breakdown', 'charge_mode',
                             'weight_rate', 'weight_minimum', 'created_at', 'updated_at']
         extra_kwargs = {
             'percent': {'coerce_to_string': False}, 'estimate_amount': {'coerce_to_string': False},

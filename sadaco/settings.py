@@ -69,7 +69,7 @@ MIDDLEWARE = [
 ]
 
 # Shown on /api/health/ and compared with the app's own label, so it's clear which update is live.
-APP_VERSION = '2026-10-07.4'
+APP_VERSION = '2026-10-07.5'
 
 ROOT_URLCONF = 'sadaco.urls'
 

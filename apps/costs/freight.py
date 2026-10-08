@@ -100,9 +100,11 @@ def item_logistics(deal):
     for key, label in LEGS:
         c = rows.get(key)
         legs.append({'category': key, 'label': label, 'transit_days': transit.get(key),
-                     'rate_per_kg': _f(c.weight_rate) if c else None,
+                     'rate_per_kg': _f(c.weight_rate) if c and c.charge_mode != 'ocean' else None,
                      'min_charge': _f(c.weight_minimum) if c else None,
                      'volumetric_divisor': c.volumetric_divisor if c else None,
+                     'charge_mode': (c.charge_mode or 'weight') if c else 'weight',
+                     'rate_per_cbm': _f(c.weight_rate) if c and c.charge_mode == 'ocean' else None,
                      'estimate': _f(c.estimate_amount) if c else None})
     return {'lines': lines, 'legs': legs, 'max_lead_time_days': max_lead, 'currency': deal.currency}
 
@@ -129,7 +131,7 @@ def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
     for k, it in enumerate(items, 1):
         w = weights.get(it.id)
         rows.append({'deal_item': it.id, 'n': k, 'description': it.description[:80], 'qty': float(it.qty),
-                     'unit_kg': w, 'dims_cm': dims.get(it.id), 'actual_kg': round((w or 0) * float(it.qty), 3)})
+                     'unit_kg': w, 'dims_cm': dims.get(it.id), 'actual_kg': (w or 0) * float(it.qty)})
 
     def charged(r, divisor):
         """Weight this line is charged on for a leg."""
@@ -156,30 +158,41 @@ def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
         cat = leg.get('category')
         if cat not in LEG_LABEL:
             continue
+        ocean = leg.get('charge_mode') == 'ocean'
         try:
-            rate = float(leg.get('rate_per_kg') or 0)
+            rate = float((leg.get('rate_per_cbm') if ocean else leg.get('rate_per_kg')) or 0)
             minimum = float(leg.get('min_charge') or 0)
         except (TypeError, ValueError):
             raise ValueError('Rates and minimum charges must be numbers.')
         if rate <= 0:
             continue
         try:
-            divisor = int(leg.get('volumetric_divisor') or 0) or None
+            divisor = None if ocean else (int(leg.get('volumetric_divisor') or 0) or None)
         except (TypeError, ValueError):
             raise ValueError('The volumetric divisor must be a whole number, e.g. 5000 or 6000.')
-        leg_rows = [{**r, 'kg': charged(r, divisor)} for r in rows]
+        if ocean:
+            # W/M: each line pays on the greater of its cubic metres and its tonnes.
+            leg_rows = []
+            for r in rows:
+                # Full precision here (rounded only when shown), so the screen's preview matches to the cent.
+                cbm = (r['dims_cm'][0] * r['dims_cm'][1] * r['dims_cm'][2] / 1_000_000) * r['qty'] if r['dims_cm'] else 0.0
+                leg_rows.append({**r, 'cbm': cbm, 'kg': r['actual_kg'], 'wm': max(cbm, r['actual_kg'] / 1000)})
+            total_units = sum(r['wm'] for r in leg_rows)
+        else:
+            leg_rows = [{**r, 'kg': charged(r, divisor)} for r in rows]
+            total_units = sum(r['kg'] for r in leg_rows)
         total_kg = sum(r['kg'] for r in leg_rows)
-        raw = total_kg * rate
+        raw = total_units * rate
         amount = round(max(raw, minimum), 2)
         factor = (amount / raw) if raw > 0 else 0
         breakdown = []
         for r in leg_rows:
-            share = round(r['kg'] * rate * factor, 2) if raw > 0 else 0
+            share = round((r['wm'] if ocean else r['kg']) * rate * factor, 2) if raw > 0 else 0
             breakdown.append({**r, 'amount': share})
         # Rounding: put any cent difference on the heaviest line.
         diff = round(amount - sum(b['amount'] for b in breakdown), 2)
         if diff and breakdown:
-            heaviest = max(breakdown, key=lambda b: b['kg'])
+            heaviest = max(breakdown, key=lambda b: b['wm'] if ocean else b['kg'])
             heaviest['amount'] = round(heaviest['amount'] + diff, 2)
         c = (DealCost.objects.filter(deal=deal, category=cat, basis='weight').first()
              or DealCost.objects.filter(deal=deal, category=cat, basis='', shipment__isnull=True,
@@ -194,9 +207,14 @@ def save_estimate(deal, lines_in, legs_in, user, display_unit='kg'):
         c.weight_rate = Decimal(str(rate))
         c.weight_minimum = Decimal(str(minimum)) if minimum else None
         c.volumetric_divisor = divisor
+        c.charge_mode = 'ocean' if ocean else 'weight'
         minimum_note = f' (minimum {deal.currency} {minimum:,.2f} applied)' if minimum and minimum > raw else ''
         basis = f'By chargeable weight (÷{divisor})' if divisor else 'By weight'
-        if display_unit == 'lb':   # described the way it was entered; stored in kg either way
+        if ocean:
+            cbm_total = sum(r['cbm'] for r in leg_rows)
+            c.description = (f'Ocean W/M: {total_units:,.2f} revenue tonnes ({cbm_total:,.2f} m³, {total_kg:,.0f} kg) '
+                             f'× {deal.currency} {rate:,.2f}/m³{minimum_note}')
+        elif display_unit == 'lb':   # described the way it was entered; stored in kg either way
             c.description = (f'{basis}: {total_kg / 0.45359237:,.1f} lb × {deal.currency} '
                              f'{rate * 0.45359237:,.2f}/lb{minimum_note}')
         else:

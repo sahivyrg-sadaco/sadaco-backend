@@ -134,3 +134,27 @@ class OverridesAndTimeTests(SadacoTestCase):
 
     def test_timezone_is_venezuela(self):
         self.assertEqual(settings.TIME_ZONE, 'America/Caracas')
+
+
+class OceanFreightTests(SadacoTestCase):
+    def test_wm_charges_the_greater_of_cubic_metres_and_tonnes(self):
+        D = self.deal()['id']
+        foam = self.item(D, 'Foam filter', 10, n=1)     # 10 × (100×50×50 cm = 0.25 m³), 2 kg each → 2.5 m³ vs 0.02 t → 2.5
+        steel = self.item(D, 'Steel plate', 2, n=2)     # 2 × (100×100×5 cm = 0.05 m³), 800 kg each → 0.1 m³ vs 1.6 t → 1.6
+        loose = self.item(D, 'Bolts', 1, n=3)           # 50 kg, no box size → 0.05 t
+        r = self.post(f'/api/deals/{D}/freight-estimate/', {
+            'lines': [{'deal_item': foam['id'], 'unit_kg': 2, 'dims_cm': [100, 50, 50]},
+                      {'deal_item': steel['id'], 'unit_kg': 800, 'dims_cm': [100, 100, 5]},
+                      {'deal_item': loose['id'], 'unit_kg': 50}],
+            'legs': [{'category': 'freight_intl', 'charge_mode': 'ocean', 'rate_per_cbm': 100, 'min_charge': 50}]}, code=200)
+        row = [c for c in r['costs'] if c['category'] == 'freight_intl'][0]
+        # 2.5 + 1.6 + 0.05 = 4.15 revenue tonnes × 100 = 415
+        self.assertEqual(row['estimate_amount'], 415.0)
+        self.assertTrue(row['description'].startswith('Ocean W/M: 4.15 revenue tonnes'))
+        split = {b['n']: b['amount'] for b in row['breakdown']}
+        self.assertEqual(split, {1: 250.0, 2: 160.0, 3: 5.0})
+        leg = [l for l in self.get(f'/api/deals/{D}/freight-estimate/')['estimate']['legs'] if l['category'] == 'freight_intl'][0]
+        self.assertEqual((leg['charge_mode'], leg['rate_per_cbm'], leg['rate_per_kg']), ('ocean', 100.0, None))
+        # Landed cost carries the ocean freight per unit: foam 250/10 = 25.
+        lines = {l['n']: l for l in self.get(f'/api/deals/{D}/landed/')['lines']}
+        self.assertEqual(lines[1]['built_in_per_unit'], 25.0)

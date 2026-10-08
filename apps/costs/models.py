@@ -72,6 +72,9 @@ class DealCost(models.Model):
     # Charge by chargeable weight: the higher of actual and volumetric (L×W×H cm³ ÷ this).
     # 5000 is typical for courier, 6000 for air freight; empty = actual weight only.
     volumetric_divisor = models.IntegerField(null=True, blank=True)
+    # 'weight' (per kg, optionally chargeable weight) or 'ocean' (per m³, W/M:
+    # the greater of cubic metres and tonnes). For ocean, weight_rate is per m³.
+    charge_mode = models.CharField(max_length=10, default='weight', blank=True)
 
     # Where the cost came from, when it was created automatically.
     shipment       = models.ForeignKey('logistics.Shipment', null=True, blank=True,
