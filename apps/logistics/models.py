@@ -37,6 +37,9 @@ class SupplierOrder(models.Model):
     po_number      = models.CharField(max_length=60, unique=True,
                                       error_messages={'unique': 'Another supplier order already uses this PO number.'})
     supplier_ref   = models.CharField(max_length=200, blank=True)   # their order confirmation no.
+    # Where the supplier sends the goods, as printed on the PO (name and address, one per line).
+    # Empty = the issuing Sadaco entity's address.
+    ship_to        = models.TextField(blank=True)
     status         = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     currency       = models.CharField(max_length=10, default='USD')
     payment_terms  = models.CharField(max_length=100, blank=True)

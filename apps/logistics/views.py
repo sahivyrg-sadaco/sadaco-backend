@@ -83,6 +83,7 @@ class OrderDetailView(_WriteRoles, APIView):
     def put(self, request, oid):
         order = get_object_or_404(_orders_qs(), pk=oid)
         old_status = order.status
+        old_ship_to = order.ship_to
         ser = SupplierOrderSerializer(order, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
         new_status = ser.validated_data.get('status', old_status)
@@ -92,6 +93,12 @@ class OrderDetailView(_WriteRoles, APIView):
             if blocked:
                 return blocked
         order = ser.save()
+        if 'ship_to' in request.data and order.ship_to.strip() != old_ship_to.strip():
+            order.ship_to = order.ship_to.strip()
+            order.save(update_fields=['ship_to'])
+            first = order.ship_to.splitlines()[0] if order.ship_to else 'the issuing company\'s address'
+            services.log(order.deal, request.user, f'Ship-to address for {order.po_number} changed to: {first}'
+                         + (' (the PO was already sent: let the supplier know).' if order.sent_date else '.'))
         if order.status != old_status:
             services.stamp_order_status(order, old_status)
             order.save()
@@ -212,3 +219,22 @@ def deal_reminders(request, pk):
     """GET /api/deals/{id}/reminders/ → this deal's tracking-board entries only."""
     get_object_or_404(Deal, pk=pk)
     return Response(services.build_board(request.user, deal_ids=[pk]))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ship_to_suggestions(request):
+    """GET /api/orders/ship-to/ → addresses used on earlier orders, most recent first (up to 15)."""
+    seen, out = set(), []
+    orders = SupplierOrder.objects.exclude(ship_to='')
+    if getattr(request.user, 'role', None) == 'sales':
+        orders = orders.filter(deal__owner=request.user)
+    for addr in (orders.order_by('-updated_at')
+                 .values_list('ship_to', flat=True)[:200]):
+        key = ' '.join(addr.split()).lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(addr)
+        if len(out) >= 15:
+            break
+    return Response(out)

@@ -27,7 +27,7 @@ class SupplierOrderSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'deal', 'supplier', 'supplier_name', 'supplier_email', 'supplier_contact',
             'supplier_phone', 'supplier_quote',
-            'po_number', 'supplier_ref', 'status', 'status_label', 'currency',
+            'po_number', 'supplier_ref', 'ship_to', 'status', 'status_label', 'currency',
             'payment_terms', 'incoterm',
             'sent_date', 'confirmed_date', 'promised_date', 'ready_date', 'shipped_date', 'received_date',
             'notes', 'items', 'total', 'shipment_ids', 'created_at', 'updated_at',
