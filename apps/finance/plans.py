@@ -67,6 +67,12 @@ def from_text(terms):
         return [{'pct': pct, **_when_of(seg, first=k == 0)} for k, (pct, seg) in enumerate(zip(pcts, segs))]
     if 'carta de cr' in t or 'letter of credit' in t or re.search(r'\bl/?c\b', t):
         return [{'pct': 100, 'when': 'after_shipping', 'days': 0}]
+    if any(w in t for w in ('con la orden', 'on order')):
+        return [{'pct': 100, 'when': 'on_order'}]
+    if any(w in t for w in ('antes del emb', 'antes del env', 'before shipping')):
+        return [{'pct': 100, 'when': 'before_shipping'}]
+    if any(w in t for w in ('al embarque', 'on shipping')):
+        return [{'pct': 100, 'when': 'after_shipping', 'days': 0}]
     if any(w in t for w in ('prepag', 'prepaid', 'pre-paid', 'anticip', 'advance', 'cash in advance')) \
             or t in ('cash', 'contado', 'de contado'):
         return [{'pct': 100, 'when': 'before_shipping'}]
@@ -82,8 +88,10 @@ def _when_of(seg, first):
     s = seg or ''
     if any(w in s for w in ('anticip', 'advance', 'on order', 'con la orden', 'adelanto')):
         return {'when': 'on_order'}
-    if any(w in s for w in ('antes del env', 'antes de despach', 'before ship', 'before shipping', 'previo al emb')):
+    if any(w in s for w in ('antes del env', 'antes del emb', 'antes de despach', 'before ship', 'before shipping', 'previo al emb')):
         return {'when': 'before_shipping'}
+    if any(w in s for w in ('al embarque', 'on shipping')):
+        return {'when': 'after_shipping', 'days': 0}
     if any(w in s for w in ('contra entrega', 'on delivery', 'a la entrega')):
         return {'when': 'on_delivery'}
     m = re.search(r'(\d{1,3})\s*(?:d[ií]as|days)|net\s*(\d{1,3})', s)
@@ -103,6 +111,24 @@ def describe(steps):
         else:
             out.append(f'{pct} {WHEN_LABEL[s["when"]]}')
     return ', '.join(out)
+
+
+WHEN_ES = {'on_order': 'anticipado', 'before_shipping': 'antes del embarque', 'on_delivery': 'contra entrega'}
+
+
+def describe_es(steps):
+    """'50% anticipado / 50% a 30 días del embarque', in the style of the terms list."""
+    if len(steps or []) == 1 and steps[0]['when'] == 'on_order':
+        return f'{steps[0]["pct"]:g}% con la orden'      # "anticipado" alone reads as before shipping
+    out = []
+    for s in steps or []:
+        pct = f'{s["pct"]:g}%'
+        if s['when'] == 'after_shipping':
+            d = s.get('days', 0)
+            out.append(f'{pct} al embarque' if d == 0 else f'{pct} a {d} días del embarque')
+        else:
+            out.append(f'{pct} {WHEN_ES[s["when"]]}')
+    return ' / '.join(out)
 
 
 def pre_shipping_pct(steps):

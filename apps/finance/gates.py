@@ -52,7 +52,7 @@ def order_money(order):
         missing = (f'Pay {_m(order.currency, required - paid)} more to {supplier} first. '
                    f'Their terms ({text}) need {pre:g}% paid before shipping; paid so far: {_m(order.currency, paid)}.')
     return {
-        'steps': steps, 'plan_text': text, 'source': source,
+        'steps': steps, 'plan_text': text, 'plan_text_es': plans.describe_es(steps), 'source': source,
         'invoiced': bool(payables), 'invoice_total': round(total, 2), 'paid': round(paid, 2),
         'pre_shipping_pct': pre, 'required_before_shipping': required,
         'ready_to_ship': missing is None, 'missing': missing, 'currency': order.currency,
@@ -71,7 +71,7 @@ def client_money(deal):
     text = plans.describe(steps)
     cur = deal.currency
     return {
-        'steps': steps, 'plan_text': text, 'source': source, 'revenue': round(revenue, 2),
+        'steps': steps, 'plan_text': text, 'plan_text_es': plans.describe_es(steps), 'source': source, 'revenue': round(revenue, 2),
         'revenue_source': revenue_source,
         'received': round(received, 2), 'currency': cur,
         'advance_pct': adv_pct, 'advance_required': adv_req,

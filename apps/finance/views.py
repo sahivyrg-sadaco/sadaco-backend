@@ -404,6 +404,10 @@ def payment_plan(request, owner, oid):
             except ValueError as e:
                 return _bad(str(e), 'steps')
             PaymentPlan.objects.update_or_create(**{field: obj}, defaults={'steps': clean})
+            # Keep the written terms in step with the schedule, so nothing shows the old terms.
+            if field in ('deal', 'supplier_order', 'client', 'supplier'):
+                obj.payment_terms = _plans.describe_es(clean)[:100]
+                obj.save(update_fields=['payment_terms'])
         deal = obj if field == 'deal' else getattr(obj, 'deal', None)
         if deal is not None:
             what = 'client payment terms' if field == 'deal' else f'payment terms for {obj.po_number}'
